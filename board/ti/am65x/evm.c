@@ -9,11 +9,16 @@
 
 #include <common.h>
 #include <dm.h>
+#include <fdt_support.h>
+#include <image.h>
+#include <init.h>
+#include <net.h>
 #include <asm/arch/sys_proto.h>
 #include <asm/arch/hardware.h>
 #include <asm/gpio.h>
 #include <asm/io.h>
 #include <asm/omap_common.h>
+#include <env.h>
 #include <spl.h>
 #include <asm/arch/sys_proto.h>
 
@@ -67,11 +72,13 @@ int dram_init_banksize(void)
 	/* Bank 0 declares the memory available in the DDR low region */
 	gd->bd->bi_dram[0].start = CONFIG_SYS_SDRAM_BASE;
 	gd->bd->bi_dram[0].size = 0x80000000;
+	gd->ram_size = 0x80000000;
 
 #ifdef CONFIG_PHYS_64BIT
 	/* Bank 1 declares the memory available in the DDR high region */
 	gd->bd->bi_dram[1].start = CONFIG_SYS_SDRAM_BASE1;
 	gd->bd->bi_dram[1].size = 0x80000000;
+	gd->ram_size = 0x100000000;
 #endif
 
 	return 0;
@@ -90,15 +97,24 @@ int board_fit_config_name_match(const char *name)
 #endif
 
 #if defined(CONFIG_OF_LIBFDT) && defined(CONFIG_OF_BOARD_SETUP)
-int ft_board_setup(void *blob, bd_t *bd)
+int ft_board_setup(void *blob, struct bd_info *bd)
 {
 	int ret;
 
 	ret = fdt_fixup_msmc_ram(blob, "/interconnect@100000", "sram@70000000");
-	if (ret)
+	if (ret) {
 		printf("%s: fixing up msmc ram failed %d\n", __func__, ret);
+		return ret;
+	}
 
-	return ret;
+#if defined(CONFIG_TI_SECURE_DEVICE)
+	/* Make Crypto HW reserved for secure world use */
+	ret = fdt_disable_node(blob, "/interconnect@100000/crypto@4E00000");
+	if (ret)
+		printf("%s: disabling SA2UL failed %d\n", __func__, ret);
+#endif
+
+	return 0;
 }
 #endif
 
@@ -113,6 +129,19 @@ int do_board_detect(void)
 		       CONFIG_EEPROM_CHIP_ADDRESS, ret);
 
 	return ret;
+}
+
+int checkboard(void)
+{
+	struct ti_am6_eeprom *ep = TI_AM6_EEPROM_DATA;
+
+	if (do_board_detect())
+		/* EEPROM not populated */
+		printf("Board: %s rev %s\n", "AM6-COMPROCEVM", "E3");
+	else
+		printf("Board: %s rev %s\n", ep->name, ep->version);
+
+	return 0;
 }
 
 static void setup_board_eeprom_env(void)
@@ -260,7 +289,7 @@ static int probe_daughtercards(void)
 		if (strncmp(ep.name, cards[i].card_name, sizeof(ep.name)))
 			continue;
 
-		printf("detected %s\n", cards[i].card_name);
+		printf("Detected: %s rev %s\n", ep.name, ep.version);
 
 		/*
 		 * Populate any MAC addresses from daughtercard into the U-Boot

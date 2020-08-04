@@ -5,10 +5,12 @@
 
 #include <common.h>
 #include <dm.h>
+#include <log.h>
 #include <syscon.h>
 #include <regmap.h>
 #include <asm/test.h>
 #include <dm/test.h>
+#include <linux/err.h>
 #include <test/ut.h>
 
 /* Base test of system controllers */

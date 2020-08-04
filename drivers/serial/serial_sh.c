@@ -15,6 +15,7 @@
 #include <serial.h>
 #include <linux/compiler.h>
 #include <dm/platform_data/serial_sh.h>
+#include <linux/delay.h>
 #include "serial_sh.h"
 
 DECLARE_GLOBAL_DATA_PTR;
@@ -210,7 +211,7 @@ static int sh_serial_ofdata_to_platdata(struct udevice *dev)
 	fdt_addr_t addr;
 	int ret;
 
-	addr = devfdt_get_addr(dev);
+	addr = dev_read_addr(dev);
 	if (!addr)
 		return -EINVAL;
 

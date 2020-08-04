@@ -9,6 +9,8 @@
 #ifndef __SDHCI_HW_H
 #define __SDHCI_HW_H
 
+#include <linux/bitops.h>
+#include <linux/types.h>
 #include <asm/io.h>
 #include <mmc.h>
 #include <asm/gpio.h>
@@ -242,7 +244,6 @@
 #define SDHCI_QUIRK_BROKEN_HISPD_MODE	BIT(5)
 #define SDHCI_QUIRK_WAIT_SEND_CMD	(1 << 6)
 #define SDHCI_QUIRK_USE_WIDE8		(1 << 8)
-#define SDHCI_QUIRK_NO_1_8_V		(1 << 9)
 
 /* to make gcc happy */
 struct sdhci_host;
@@ -267,6 +268,7 @@ struct sdhci_ops {
 	void	(*set_clock)(struct sdhci_host *host, u32 div);
 	int (*platform_execute_tuning)(struct mmc *host, u8 opcode);
 	void (*set_delay)(struct sdhci_host *host);
+	int	(*deferred_probe)(struct sdhci_host *host);
 };
 
 #if CONFIG_IS_ENABLED(MMC_SDHCI_ADMA)
@@ -321,6 +323,8 @@ struct sdhci_host {
 	uint	voltages;
 
 	struct mmc_config cfg;
+	void *align_buffer;
+	bool force_align_buffer;
 	dma_addr_t start_addr;
 	int flags;
 #define USE_SDMA	(0x1 << 0)

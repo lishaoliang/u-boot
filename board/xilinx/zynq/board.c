@@ -5,7 +5,9 @@
  */
 
 #include <common.h>
+#include <init.h>
 #include <dm/uclass.h>
+#include <env.h>
 #include <fdtdec.h>
 #include <fpga.h>
 #include <malloc.h>
@@ -15,15 +17,9 @@
 #include <zynqpl.h>
 #include <asm/arch/hardware.h>
 #include <asm/arch/sys_proto.h>
+#include "../common/board.h"
 
 DECLARE_GLOBAL_DATA_PTR;
-
-#if !defined(CONFIG_SPL_BUILD) && defined(CONFIG_BOARD_EARLY_INIT_F)
-int board_early_init_f(void)
-{
-	return 0;
-}
-#endif
 
 int board_init(void)
 {
@@ -51,11 +47,11 @@ int board_late_init(void)
 		env_set("modeboot", "norboot");
 		break;
 	case ZYNQ_BM_SD:
-		mode = "mmc";
+		mode = "mmc0";
 		env_set("modeboot", "sdboot");
 		break;
 	case ZYNQ_BM_JTAG:
-		mode = "pxe dhcp";
+		mode = "jtag pxe dhcp";
 		env_set("modeboot", "jtagboot");
 		break;
 	default:
@@ -81,7 +77,7 @@ int board_late_init(void)
 
 	env_set("boot_targets", new_targets);
 
-	return 0;
+	return board_late_init_xilinx();
 }
 
 #if !defined(CONFIG_SYS_SDRAM_BASE) && !defined(CONFIG_SYS_SDRAM_SIZE)

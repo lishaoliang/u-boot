@@ -4,27 +4,15 @@
 # Base class for all entries
 #
 
-from __future__ import print_function
-
 from collections import namedtuple
-
-# importlib was introduced in Python 2.7 but there was a report of it not
-# working in 2.7.12, so we work around this:
-# http://lists.denx.de/pipermail/u-boot/2016-October/269729.html
-try:
-    import importlib
-    have_importlib = True
-except:
-    have_importlib = False
-
+import importlib
 import os
 import sys
 
-import fdt_util
-import state
-import tools
-from tools import ToHex, ToHexSize
-import tout
+from dtoc import fdt_util
+from patman import tools
+from patman.tools import ToHex, ToHexSize
+from patman import tout
 
 modules = {}
 
@@ -57,6 +45,8 @@ class Entry(object):
         offset: Offset of entry within the section, None if not known yet (in
             which case it will be calculated by Pack())
         size: Entry size in bytes, None if not known
+        pre_reset_size: size as it was before ResetForPack(). This allows us to
+            keep track of the size we started with and detect size changes
         uncomp_size: Size of uncompressed data in bytes, if the entry is
             compressed, else None
         contents_size: Size of contents in bytes, 0 by default
@@ -71,12 +61,17 @@ class Entry(object):
         orig_size: Original size value read from node
     """
     def __init__(self, section, etype, node, name_prefix=''):
+        # Put this here to allow entry-docs and help to work without libfdt
+        global state
+        from binman import state
+
         self.section = section
         self.etype = etype
         self._node = node
         self.name = node and (name_prefix + node.name) or 'none'
         self.offset = None
         self.size = None
+        self.pre_reset_size = None
         self.uncomp_size = None
         self.data = None
         self.contents_size = 0
@@ -89,6 +84,7 @@ class Entry(object):
         self.image_pos = None
         self._expand_size = False
         self.compress = 'none'
+        self.missing = False
 
     @staticmethod
     def Lookup(node_path, etype):
@@ -113,18 +109,11 @@ class Entry(object):
 
         # Import the module if we have not already done so.
         if not module:
-            old_path = sys.path
-            sys.path.insert(0, os.path.join(our_path, 'etype'))
             try:
-                if have_importlib:
-                    module = importlib.import_module(module_name)
-                else:
-                    module = __import__(module_name)
+                module = importlib.import_module('binman.etype.' + module_name)
             except ImportError as e:
                 raise ValueError("Unknown entry type '%s' in node '%s' (expected etype/%s.py, error '%s'" %
                                  (etype, node_path, module_name, e))
-            finally:
-                sys.path = old_path
             modules[module_name] = module
 
         # Look up the expected class name
@@ -323,6 +312,7 @@ class Entry(object):
         self.Detail('ResetForPack: offset %s->%s, size %s->%s' %
                     (ToHex(self.offset), ToHex(self.orig_offset),
                      ToHex(self.size), ToHex(self.orig_size)))
+        self.pre_reset_size = self.size
         self.offset = self.orig_offset
         self.size = self.orig_size
 
@@ -597,9 +587,7 @@ features to produce new behaviours.
             modules.remove('_testing')
         missing = []
         for name in modules:
-            if name.startswith('__'):
-                continue
-            module = Entry.Lookup(name, name)
+            module = Entry.Lookup('WriteDocs', name)
             docs = getattr(module, '__doc__')
             if test_missing == name:
                 docs = None
@@ -714,8 +702,26 @@ features to produce new behaviours.
         """
         # Use True here so that we get an uncompressed section to work from,
         # although compressed sections are currently not supported
+        tout.Debug("ReadChildData section '%s', entry '%s'" %
+                   (self.section.GetPath(), self.GetPath()))
         data = self.section.ReadChildData(self, decomp)
         return data
+
+    def ReadChildData(self, child, decomp=True):
+        """Read the data for a particular child entry
+
+        This reads data from the parent and extracts the piece that relates to
+        the given child.
+
+        Args:
+            child: Child entry to read data for (must be valid)
+            decomp: True to decompress any compressed data before returning it;
+                False to return the raw, uncompressed data
+
+        Returns:
+            Data for the child (bytes)
+        """
+        pass
 
     def LoadData(self, decomp=True):
         data = self.ReadData(decomp)
@@ -748,7 +754,10 @@ features to produce new behaviours.
             True if the data did not result in a resize of this entry, False if
                  the entry must be resized
         """
-        self.contents_size = self.size
+        if self.size is not None:
+            self.contents_size = self.size
+        else:
+            self.contents_size = self.pre_reset_size
         ok = self.ProcessContentsUpdate(data)
         self.Detail('WriteData: size=%x, ok=%s' % (len(data), ok))
         section_ok = self.section.WriteChildData(self)
@@ -786,3 +795,23 @@ features to produce new behaviours.
             elif self == entries[-1]:
                 return 'end'
         return 'middle'
+
+    def SetAllowMissing(self, allow_missing):
+        """Set whether a section allows missing external blobs
+
+        Args:
+            allow_missing: True if allowed, False if not allowed
+        """
+        # This is meaningless for anything other than sections
+        pass
+
+    def CheckMissing(self, missing_list):
+        """Check if any entries in this section have missing external blobs
+
+        If there are missing blobs, the entries are added to the list
+
+        Args:
+            missing_list: List of Entry objects to be added to
+        """
+        if self.missing:
+            missing_list.append(self)

@@ -3,9 +3,6 @@
 # Copyright (c) 2016 Google, Inc
 #
 
-from __future__ import print_function
-
-import command
 import glob
 import os
 import shutil
@@ -13,7 +10,8 @@ import struct
 import sys
 import tempfile
 
-import tout
+from patman import command
+from patman import tout
 
 # Output directly (generally this is temporary)
 outdir = None
@@ -116,22 +114,26 @@ def SetInputDirs(dirname):
     indir = dirname
     tout.Debug("Using input directories %s" % indir)
 
-def GetInputFilename(fname):
+def GetInputFilename(fname, allow_missing=False):
     """Return a filename for use as input.
 
     Args:
         fname: Filename to use for new file
+        allow_missing: True if the filename can be missing
 
     Returns:
-        The full path of the filename, within the input directory
+        The full path of the filename, within the input directory, or
+        None on error
     """
-    if not indir:
+    if not indir or fname[:1] == '/':
         return fname
     for dirname in indir:
         pathname = os.path.join(dirname, fname)
         if os.path.exists(pathname):
             return pathname
 
+    if allow_missing:
+        return None
     raise ValueError("Filename '%s' not found in input path (%s) (cwd='%s')" %
                      (fname, ','.join(indir), os.getcwd()))
 
@@ -196,18 +198,24 @@ def Run(name, *args, **kwargs):
     Args:
         name: Command name to run
         args: Arguments to the tool
-        kwargs: Options to pass to command.run()
 
     Returns:
         CommandResult object
     """
     try:
+        binary = kwargs.get('binary')
         env = None
         if tool_search_paths:
             env = dict(os.environ)
             env['PATH'] = ':'.join(tool_search_paths) + ':' + env['PATH']
-        return command.Run(name, *args, capture=True,
-                           capture_stderr=True, env=env, **kwargs)
+        all_args = (name,) + args
+        result = command.RunPipe([all_args], capture=True, capture_stderr=True,
+                                 env=env, raise_on_error=False, binary=binary)
+        if result.return_code:
+            raise Exception("Error %d running '%s': %s" %
+               (result.return_code,' '.join(all_args),
+                result.stderr))
+        return result.stdout
     except:
         if env and not PathHasFile(env['PATH'], name):
             msg = "Please install tool '%s'" % name
@@ -266,7 +274,7 @@ def ReadFile(fname, binary=True):
                    #(fname, len(data), len(data)))
     return data
 
-def WriteFile(fname, data):
+def WriteFile(fname, data, binary=True):
     """Write data into a file.
 
     Args:
@@ -275,7 +283,7 @@ def WriteFile(fname, data):
     """
     #self._out.Info("Write file '%s' size %d (%#0x)" %
                    #(fname, len(data), len(data)))
-    with open(Filename(fname), 'wb') as fd:
+    with open(Filename(fname), binary and 'wb' or 'w') as fd:
         fd.write(data)
 
 def GetBytes(byte, size):
@@ -370,7 +378,7 @@ def ToBytes(string):
     """Convert a str type into a bytes type
 
     Args:
-        string: string to convert value
+        string: string to convert
 
     Returns:
         Python 3: A bytes type
@@ -379,6 +387,18 @@ def ToBytes(string):
     if sys.version_info[0] >= 3:
         return string.encode('utf-8')
     return string
+
+def ToString(bval):
+    """Convert a bytes type into a str type
+
+    Args:
+        bval: bytes value to convert
+
+    Returns:
+        Python 3: A bytes type
+        Python 2: A string type
+    """
+    return bval.decode('utf-8')
 
 def Compress(indata, algo, with_header=True):
     """Compress some data using a given algorithm
@@ -445,7 +465,7 @@ def Decompress(indata, algo, with_header=True):
     elif algo == 'lzma':
         outfname = GetOutputFilename('%s.decomp.otmp' % algo)
         Run('lzma_alone', 'd', fname, outfname)
-        data = ReadFile(outfname)
+        data = ReadFile(outfname, binary=True)
     elif algo == 'gzip':
         data = Run('gzip', '-cd', fname, binary=True)
     else:

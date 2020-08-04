@@ -7,6 +7,7 @@
 #include <common.h>
 #include <clk-uclass.h>
 #include <dm.h>
+#include <log.h>
 #include <dm/lists.h>
 #include <dm/util.h>
 #include "pmc.h"
@@ -24,11 +25,13 @@ static const struct udevice_id at91_pmc_match[] = {
 	{}
 };
 
-U_BOOT_DRIVER(at91_pmc) = {
-	.name = "at91-pmc",
+U_BOOT_DRIVER(atmel_at91rm9200_pmc) = {
+	.name = "atmel_at91rm9200_pmc",
 	.id = UCLASS_SIMPLE_BUS,
 	.of_match = at91_pmc_match,
 };
+
+U_BOOT_DRIVER_ALIAS(atmel_at91rm9200_pmc, atmel_at91sam9260_pmc)
 
 /*---------------------------------------------------------*/
 
@@ -61,7 +64,7 @@ int at91_clk_sub_device_bind(struct udevice *dev, const char *drv_name)
 	     offset > 0;
 	     offset = fdt_next_subnode(fdt, offset)) {
 		if (pre_reloc_only &&
-		    !dm_ofnode_pre_reloc(offset_to_ofnode(offset)))
+		    !ofnode_pre_reloc(offset_to_ofnode(offset)))
 			continue;
 		/*
 		 * If this node has "compatible" property, this is not

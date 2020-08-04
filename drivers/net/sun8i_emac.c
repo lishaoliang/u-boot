@@ -10,6 +10,9 @@
  *
 */
 
+#include <cpu_func.h>
+#include <log.h>
+#include <asm/cache.h>
 #include <asm/io.h>
 #include <asm/arch/clock.h>
 #include <asm/arch/gpio.h>
@@ -17,13 +20,16 @@
 #include <clk.h>
 #include <dm.h>
 #include <fdt_support.h>
+#include <dm/device_compat.h>
+#include <linux/bitops.h>
+#include <linux/delay.h>
 #include <linux/err.h>
 #include <malloc.h>
 #include <miiphy.h>
 #include <net.h>
 #include <reset.h>
 #include <dt-bindings/pinctrl/sun4i-a10.h>
-#ifdef CONFIG_DM_GPIO
+#if CONFIG_IS_ENABLED(DM_GPIO)
 #include <asm-generic/gpio.h>
 #endif
 
@@ -105,6 +111,7 @@ enum emac_variant {
 	H3_EMAC,
 	A64_EMAC,
 	R40_GMAC,
+	H6_EMAC,
 };
 
 struct emac_dma_desc {
@@ -141,7 +148,7 @@ struct emac_eth_dev {
 	struct clk ephy_clk;
 	struct reset_ctl tx_rst;
 	struct reset_ctl ephy_rst;
-#ifdef CONFIG_DM_GPIO
+#if CONFIG_IS_ENABLED(DM_GPIO)
 	struct gpio_desc reset_gpio;
 #endif
 };
@@ -294,9 +301,9 @@ static int sun8i_emac_set_syscon(struct sun8i_eth_pdata *pdata,
 	if (priv->variant == R40_GMAC) {
 		/* Select RGMII for R40 */
 		reg = readl(priv->sysctl_reg + 0x164);
-		reg |= CCM_GMAC_CTRL_TX_CLK_SRC_INT_RGMII |
-		       CCM_GMAC_CTRL_GPIT_RGMII |
-		       CCM_GMAC_CTRL_TX_CLK_DELAY(CONFIG_GMAC_TX_DELAY);
+		reg |= SC_ETCS_INT_GMII |
+		       SC_EPIT |
+		       (CONFIG_GMAC_TX_DELAY << SC_ETXDC_OFFSET);
 
 		writel(reg, priv->sysctl_reg + 0x164);
 		return 0;
@@ -304,14 +311,16 @@ static int sun8i_emac_set_syscon(struct sun8i_eth_pdata *pdata,
 
 	reg = readl(priv->sysctl_reg + 0x30);
 
-	if (priv->variant == H3_EMAC) {
+	if (priv->variant == H3_EMAC || priv->variant == H6_EMAC) {
 		ret = sun8i_emac_set_syscon_ephy(priv, &reg);
 		if (ret)
 			return ret;
 	}
 
 	reg &= ~(SC_ETCS_MASK | SC_EPIT);
-	if (priv->variant == H3_EMAC || priv->variant == A64_EMAC)
+	if (priv->variant == H3_EMAC ||
+	    priv->variant == A64_EMAC ||
+	    priv->variant == H6_EMAC)
 		reg &= ~SC_RMII_EN;
 
 	switch (priv->interface) {
@@ -323,7 +332,8 @@ static int sun8i_emac_set_syscon(struct sun8i_eth_pdata *pdata,
 		break;
 	case PHY_INTERFACE_MODE_RMII:
 		if (priv->variant == H3_EMAC ||
-		    priv->variant == A64_EMAC) {
+		    priv->variant == A64_EMAC ||
+		    priv->variant == H6_EMAC) {
 			reg |= SC_RMII_EN | SC_ETCS_EXT_GMII;
 		break;
 		}
@@ -529,7 +539,7 @@ static int parse_phy_pins(struct udevice *dev)
 
 		if (priv->variant == H3_EMAC)
 			sunxi_gpio_set_cfgpin(pin, SUN8I_IOMUX_H3);
-		else if (priv->variant == R40_GMAC)
+		else if (priv->variant == R40_GMAC || priv->variant == H6_EMAC)
 			sunxi_gpio_set_cfgpin(pin, SUN8I_IOMUX_R40);
 		else
 			sunxi_gpio_set_cfgpin(pin, SUN8I_IOMUX);
@@ -695,7 +705,7 @@ err_tx_clk:
 	return ret;
 }
 
-#if defined(CONFIG_DM_GPIO)
+#if CONFIG_IS_ENABLED(DM_GPIO)
 static int sun8i_mdio_reset(struct mii_dev *bus)
 {
 	struct udevice *dev = bus->priv;
@@ -742,7 +752,7 @@ static int sun8i_mdio_init(const char *name, struct udevice *priv)
 	bus->write = sun8i_mdio_write;
 	snprintf(bus->name, sizeof(bus->name), name);
 	bus->priv = (void *)priv;
-#if defined(CONFIG_DM_GPIO)
+#if CONFIG_IS_ENABLED(DM_GPIO)
 	bus->reset = sun8i_mdio_reset;
 #endif
 
@@ -904,12 +914,12 @@ static int sun8i_emac_eth_ofdata_to_platdata(struct udevice *dev)
 	const fdt32_t *reg;
 	int node = dev_of_offset(dev);
 	int offset = 0;
-#ifdef CONFIG_DM_GPIO
+#if CONFIG_IS_ENABLED(DM_GPIO)
 	int reset_flags = GPIOD_IS_OUT;
 #endif
 	int ret;
 
-	pdata->iobase = devfdt_get_addr(dev);
+	pdata->iobase = dev_read_addr(dev);
 	if (pdata->iobase == FDT_ADDR_T_NONE) {
 		debug("%s: Cannot find MAC base address\n", __func__);
 		return -EINVAL;
@@ -998,7 +1008,7 @@ static int sun8i_emac_eth_ofdata_to_platdata(struct udevice *dev)
 		printf("%s: Invalid RX delay value %d\n", __func__,
 		       sun8i_pdata->rx_delay_ps);
 
-#ifdef CONFIG_DM_GPIO
+#if CONFIG_IS_ENABLED(DM_GPIO)
 	if (fdtdec_get_bool(gd->fdt_blob, dev_of_offset(dev),
 			    "snps,reset-active-low"))
 		reset_flags |= GPIOD_ACTIVE_LOW;
@@ -1026,6 +1036,8 @@ static const struct udevice_id sun8i_emac_eth_ids[] = {
 		.data = (uintptr_t)A83T_EMAC },
 	{.compatible = "allwinner,sun8i-r40-gmac",
 		.data = (uintptr_t)R40_GMAC },
+	{.compatible = "allwinner,sun50i-h6-emac",
+		.data = (uintptr_t)H6_EMAC },
 	{ }
 };
 

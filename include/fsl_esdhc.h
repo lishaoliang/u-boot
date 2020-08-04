@@ -4,6 +4,7 @@
  *-------------------------------------------------------------------
  *
  * Copyright 2007-2008,2010-2011 Freescale Semiconductor, Inc
+ * Copyright 2020 NXP
  */
 
 #ifndef  __FSL_ESDHC_H__
@@ -14,10 +15,6 @@
 
 /* needed for the mmc_cfg definition */
 #include <mmc.h>
-
-#ifdef CONFIG_FSL_ESDHC_ADAPTER_IDENT
-#include "../board/freescale/common/qixis.h"
-#endif
 
 /* FSL eSDHC-specific constants */
 #define SYSCTL			0x0002e02c
@@ -98,6 +95,7 @@
 #define PROCTL_DTW_4		0x00000002
 #define PROCTL_DTW_8		0x00000004
 #define PROCTL_D3CD		0x00000008
+#define PROCTL_VOLT_SEL		0x00000400
 
 #define CMDARG			0x0002e008
 
@@ -156,18 +154,18 @@
 #define BLKATTR_SIZE(x)	(x & 0x1fff)
 #define MAX_BLK_CNT	0x7fff	/* so malloc will have enough room with 32M */
 
-#define ESDHC_HOSTCAPBLT_VS18	0x04000000
-#define ESDHC_HOSTCAPBLT_VS30	0x02000000
-#define ESDHC_HOSTCAPBLT_VS33	0x01000000
-#define ESDHC_HOSTCAPBLT_SRS	0x00800000
-#define ESDHC_HOSTCAPBLT_DMAS	0x00400000
-#define ESDHC_HOSTCAPBLT_HSS	0x00200000
+/* Host controller capabilities register */
+#define HOSTCAPBLT_VS18		0x04000000
+#define HOSTCAPBLT_VS30		0x02000000
+#define HOSTCAPBLT_VS33		0x01000000
+#define HOSTCAPBLT_SRS		0x00800000
+#define HOSTCAPBLT_DMAS		0x00400000
+#define HOSTCAPBLT_HSS		0x00200000
 
 struct fsl_esdhc_cfg {
 	phys_addr_t esdhc_base;
 	u32	sdhc_clk;
 	u8	max_bus_width;
-	int	wp_enable;
 	int	vs18_enable; /* Use 1.8V if set to 1 */
 	struct mmc_config cfg;
 };
@@ -202,12 +200,16 @@ struct fsl_esdhc_cfg {
 #endif
 
 #ifdef CONFIG_FSL_ESDHC
-int fsl_esdhc_mmc_init(bd_t *bis);
-int fsl_esdhc_initialize(bd_t *bis, struct fsl_esdhc_cfg *cfg);
-void fdt_fixup_esdhc(void *blob, bd_t *bd);
+int fsl_esdhc_mmc_init(struct bd_info *bis);
+int fsl_esdhc_initialize(struct bd_info *bis, struct fsl_esdhc_cfg *cfg);
+void fdt_fixup_esdhc(void *blob, struct bd_info *bd);
+#ifdef MMC_SUPPORTS_TUNING
+static inline int fsl_esdhc_execute_tuning(struct udevice *dev,
+					   uint32_t opcode) {return 0; }
+#endif
 #else
-static inline int fsl_esdhc_mmc_init(bd_t *bis) { return -ENOSYS; }
-static inline void fdt_fixup_esdhc(void *blob, bd_t *bd) {}
+static inline int fsl_esdhc_mmc_init(struct bd_info *bis) { return -ENOSYS; }
+static inline void fdt_fixup_esdhc(void *blob, struct bd_info *bd) {}
 #endif /* CONFIG_FSL_ESDHC */
 void __noreturn mmc_boot(void);
 void mmc_spl_load_image(uint32_t offs, unsigned int size, void *vdst);

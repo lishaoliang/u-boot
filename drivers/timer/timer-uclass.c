@@ -5,12 +5,14 @@
 
 #include <common.h>
 #include <dm.h>
+#include <init.h>
 #include <dm/lists.h>
 #include <dm/device-internal.h>
 #include <dm/root.h>
 #include <clk.h>
 #include <errno.h>
 #include <timer.h>
+#include <linux/err.h>
 
 DECLARE_GLOBAL_DATA_PTR;
 

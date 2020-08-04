@@ -7,6 +7,7 @@
  */
 
 #include <common.h>
+#include <clock_legacy.h>
 #include <linux/libfdt.h>
 #include <fdt_support.h>
 #include <asm/processor.h>
@@ -30,7 +31,7 @@ void fdt_fixup_muram (void *blob)
 }
 #endif
 
-void ft_cpu_setup(void *blob, bd_t *bd)
+void ft_cpu_setup(void *blob, struct bd_info *bd)
 {
 	immap_t *immr = (immap_t *)CONFIG_SYS_IMMR;
 	int spridr = immr->sysconf.spridr;

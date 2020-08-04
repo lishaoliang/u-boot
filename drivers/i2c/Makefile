@@ -12,17 +12,24 @@ obj-$(CONFIG_SYS_I2C) += i2c_core.o
 obj-$(CONFIG_SYS_I2C_ASPEED) += ast_i2c.o
 obj-$(CONFIG_SYS_I2C_AT91) += at91_i2c.o
 obj-$(CONFIG_SYS_I2C_CADENCE) += i2c-cdns.o
+obj-$(CONFIG_SYS_I2C_CA) += i2c-cortina.o
 obj-$(CONFIG_SYS_I2C_DAVINCI) += davinci_i2c.o
 obj-$(CONFIG_SYS_I2C_DW) += designware_i2c.o
+ifdef CONFIG_DM_PCI
+obj-$(CONFIG_SYS_I2C_DW) += designware_i2c_pci.o
+endif
 obj-$(CONFIG_SYS_I2C_FSL) += fsl_i2c.o
 obj-$(CONFIG_SYS_I2C_IHS) += ihs_i2c.o
 obj-$(CONFIG_SYS_I2C_INTEL) += intel_i2c.o
 obj-$(CONFIG_SYS_I2C_IMX_LPI2C) += imx_lpi2c.o
+obj-$(CONFIG_SYS_I2C_IPROC) += iproc_i2c.o
 obj-$(CONFIG_SYS_I2C_KONA) += kona_i2c.o
 obj-$(CONFIG_SYS_I2C_LPC32XX) += lpc32xx_i2c.o
 obj-$(CONFIG_SYS_I2C_MESON) += meson_i2c.o
 obj-$(CONFIG_SYS_I2C_MVTWSI) += mvtwsi.o
 obj-$(CONFIG_SYS_I2C_MXC) += mxc_i2c.o
+obj-$(CONFIG_SYS_I2C_NEXELL) += nx_i2c.o
+obj-$(CONFIG_SYS_I2C_OCTEON) += octeon_i2c.o
 obj-$(CONFIG_SYS_I2C_OMAP24XX) += omap24xx_i2c.o
 obj-$(CONFIG_SYS_I2C_RCAR_I2C) += rcar_i2c.o
 obj-$(CONFIG_SYS_I2C_RCAR_IIC) += rcar_iic.o

@@ -10,11 +10,15 @@
 #include <clk.h>
 #include <dm.h>
 #include <dma.h>
+#include <log.h>
+#include <malloc.h>
 #include <miiphy.h>
 #include <net.h>
 #include <reset.h>
 #include <wait_bit.h>
 #include <asm/io.h>
+#include <dm/device_compat.h>
+#include <linux/delay.h>
 
 #define ETH_PORT_STR			"brcm,enetsw-port"
 

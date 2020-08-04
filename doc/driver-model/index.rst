@@ -6,7 +6,9 @@ Driver Model
 .. toctree::
    :maxdepth: 2
 
+   debugging
    design
+   ethernet
    fdt-fixup
    fs_firmware_loader
    i2c-howto
@@ -17,5 +19,6 @@ Driver Model
    pmic-framework
    remoteproc-framework
    serial-howto
+   soc-framework
    spi-howto
    usb-info

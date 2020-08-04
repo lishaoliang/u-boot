@@ -9,7 +9,10 @@
 #include <common.h>
 #include <dm.h>
 #include <errno.h>
+#include <log.h>
 #include <sysreset.h>
+#include <dm/device_compat.h>
+#include <linux/err.h>
 #include <linux/soc/ti/ti_sci_protocol.h>
 
 /**

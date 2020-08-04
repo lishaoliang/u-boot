@@ -6,6 +6,9 @@
 #include <common.h>
 #include <clk.h>
 #include <dm.h>
+#include <log.h>
+#include <dm/device_compat.h>
+#include <dm/devres.h>
 #include <dm/ofnode.h>
 #include <generic-phy.h>
 #include <reset.h>
@@ -76,7 +79,7 @@ static int ohci_shutdown_phy(struct udevice *dev)
 
 static int ohci_usb_probe(struct udevice *dev)
 {
-	struct ohci_regs *regs = (struct ohci_regs *)devfdt_get_addr(dev);
+	struct ohci_regs *regs = dev_read_addr_ptr(dev);
 	struct generic_ohci *priv = dev_get_priv(dev);
 	int i, err, ret, clock_nb, reset_nb;
 
@@ -95,7 +98,7 @@ static int ohci_usb_probe(struct udevice *dev)
 				break;
 
 			err = clk_enable(&priv->clocks[i]);
-			if (err) {
+			if (err && err != -ENOSYS) {
 				dev_err(dev, "failed to enable clock %d\n", i);
 				clk_free(&priv->clocks[i]);
 				goto clk_err;

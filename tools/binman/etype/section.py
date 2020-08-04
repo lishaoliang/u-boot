@@ -8,16 +8,14 @@ Sections are entries which can contain other entries. This allows hierarchical
 images to be created.
 """
 
-from __future__ import print_function
-
 from collections import OrderedDict
 import re
 import sys
 
-from entry import Entry
-import fdt_util
-import tools
-import tout
+from binman.entry import Entry
+from dtoc import fdt_util
+from patman import tools
+from patman import tout
 
 
 class Entry_section(Entry):
@@ -36,6 +34,11 @@ class Entry_section(Entry):
         name-prefix: Adds a prefix to the name of every entry in the section
             when writing out the map
 
+    Properties:
+        _allow_missing: True if this section permits external blobs to be
+            missing their contents. The second will produce an image but of
+            course it will not work.
+
     Since a section is also an entry, it inherits all the properies of entries
     too.
 
@@ -45,16 +48,18 @@ class Entry_section(Entry):
     """
     def __init__(self, section, etype, node, test=False):
         if not test:
-            Entry.__init__(self, section, etype, node)
+            super().__init__(section, etype, node)
         self._entries = OrderedDict()
         self._pad_byte = 0
         self._sort = False
         self._skip_at_start = None
         self._end_4gb = False
+        self._allow_missing = False
+        self.missing = False
 
     def ReadNode(self):
         """Read properties from the image node"""
-        Entry.ReadNode(self)
+        super().ReadNode()
         self._pad_byte = fdt_util.GetInt(self._node, 'pad-byte', 0)
         self._sort = fdt_util.GetBool(self._node, 'sort-by-offset')
         self._end_4gb = fdt_util.GetBool(self._node, 'end-at-4gb')
@@ -128,13 +133,13 @@ class Entry_section(Entry):
         a section containing a list of files. Process these entries so that
         this information is added to the device tree.
         """
-        Entry.ExpandEntries(self)
+        super().ExpandEntries()
         for entry in self._entries.values():
             entry.ExpandEntries()
 
     def AddMissingProperties(self):
         """Add new properties to the device tree as needed for this entry"""
-        Entry.AddMissingProperties(self)
+        super().AddMissingProperties()
         for entry in self._entries.values():
             entry.AddMissingProperties()
 
@@ -142,13 +147,19 @@ class Entry_section(Entry):
         return self.GetEntryContents()
 
     def GetData(self):
-        section_data = tools.GetBytes(self._pad_byte, self.size)
+        section_data = b''
 
         for entry in self._entries.values():
             data = entry.GetData()
-            base = self.pad_before + entry.offset - self._skip_at_start
-            section_data = (section_data[:base] + data +
-                            section_data[base + len(data):])
+            base = self.pad_before + (entry.offset or 0) - self._skip_at_start
+            pad = base - len(section_data)
+            if pad > 0:
+                section_data += tools.GetBytes(self._pad_byte, pad)
+            section_data += data
+        if self.size:
+            pad = self.size - len(section_data)
+            if pad > 0:
+                section_data += tools.GetBytes(self._pad_byte, pad)
         self.Detail('GetData: %d entries, total size %#x' %
                     (len(self._entries), len(section_data)))
         return section_data
@@ -164,14 +175,14 @@ class Entry_section(Entry):
 
     def ResetForPack(self):
         """Reset offset/size fields so that packing can be done again"""
-        Entry.ResetForPack(self)
+        super().ResetForPack()
         for entry in self._entries.values():
             entry.ResetForPack()
 
     def Pack(self, offset):
         """Pack all entries into the section"""
         self._PackEntries()
-        return Entry.Pack(self, offset)
+        return super().Pack(offset)
 
     def _PackEntries(self):
         """Pack all entries into the image"""
@@ -215,7 +226,7 @@ class Entry_section(Entry):
                             "at %#x (%d)" %
                             (entry.offset, entry.offset, self._skip_at_start,
                              self._skip_at_start))
-            if entry.offset < offset:
+            if entry.offset < offset and entry.size:
                 entry.Raise("Offset %#x (%d) overlaps with previous entry '%s' "
                             "ending at %#x (%d)" %
                             (entry.offset, entry.offset, prev_name, offset, offset))
@@ -228,12 +239,12 @@ class Entry_section(Entry):
             entry.WriteSymbols(self)
 
     def SetCalculatedProperties(self):
-        Entry.SetCalculatedProperties(self)
+        super().SetCalculatedProperties()
         for entry in self._entries.values():
             entry.SetCalculatedProperties()
 
     def SetImagePos(self, image_pos):
-        Entry.SetImagePos(self, image_pos)
+        super().SetImagePos(image_pos)
         for entry in self._entries.values():
             entry.SetImagePos(image_pos + self.offset)
 
@@ -284,13 +295,16 @@ class Entry_section(Entry):
                 return entry.GetData()
         source_entry.Raise("Cannot find entry for node '%s'" % node.name)
 
-    def LookupSymbol(self, sym_name, optional, msg):
+    def LookupSymbol(self, sym_name, optional, msg, base_addr):
         """Look up a symbol in an ELF file
 
         Looks up a symbol in an ELF file. Only entry types which come from an
         ELF image can be used by this function.
 
-        At present the only entry property supported is offset.
+        At present the only entry properties supported are:
+            offset
+            image_pos - 'base_addr' is added if this is not an end-at-4gb image
+            size
 
         Args:
             sym_name: Symbol name in the ELF file to look up in the format
@@ -303,6 +317,12 @@ class Entry_section(Entry):
             optional: True if the symbol is optional. If False this function
                 will raise if the symbol is not found
             msg: Message to display if an error occurs
+            base_addr: Base address of image. This is added to the returned
+                image_pos in most cases so that the returned position indicates
+                where the targetted entry/binary has actually been loaded. But
+                if end-at-4gb is used, this is not done, since the binary is
+                already assumed to be linked to the ROM position and using
+                execute-in-place (XIP).
 
         Returns:
             Value that should be assigned to that symbol, or None if it was
@@ -337,7 +357,12 @@ class Entry_section(Entry):
         if prop_name == 'offset':
             return entry.offset
         elif prop_name == 'image_pos':
-            return entry.image_pos
+            value = entry.image_pos
+            if not self.GetImage()._end_4gb:
+                value += base_addr
+            return value
+        if prop_name == 'size':
+            return entry.size
         else:
             raise ValueError("%s: No such property '%s'" % (msg, prop_name))
 
@@ -417,8 +442,8 @@ class Entry_section(Entry):
         if not entry:
             self._Raise("Unable to set offset/size for unknown entry '%s'" %
                         name)
-        entry.SetOffsetSize(self._skip_at_start + offset if offset else None,
-                            size)
+        entry.SetOffsetSize(self._skip_at_start + offset if offset is not None
+                            else None, size)
 
     def GetEntryOffsets(self):
         """Handle entries that want to set the offset/size of other entries
@@ -500,18 +525,12 @@ class Entry_section(Entry):
         return data
 
     def ReadChildData(self, child, decomp=True):
-        """Read the data for a particular child entry
-
-        Args:
-            child: Child entry to read data for
-            decomp: True to return uncompressed data, False to leave the data
-                compressed if it is compressed
-
-        Returns:
-            Data contents of entry
-        """
+        tout.Debug("ReadChildData for child '%s'" % child.GetPath())
         parent_data = self.ReadData(True)
-        data = parent_data[child.offset:child.offset + child.size]
+        offset = child.offset - self._skip_at_start
+        tout.Debug("Extract for child '%s': offset %#x, skip_at_start %#x, result %#x" %
+                   (child.GetPath(), child.offset, self._skip_at_start, offset))
+        data = parent_data[offset:offset + child.size]
         if decomp:
             indata = data
             data = tools.Decompress(indata, child.compress)
@@ -523,3 +542,32 @@ class Entry_section(Entry):
 
     def WriteChildData(self, child):
         return True
+
+    def SetAllowMissing(self, allow_missing):
+        """Set whether a section allows missing external blobs
+
+        Args:
+            allow_missing: True if allowed, False if not allowed
+        """
+        self._allow_missing = allow_missing
+        for entry in self._entries.values():
+            entry.SetAllowMissing(allow_missing)
+
+    def GetAllowMissing(self):
+        """Get whether a section allows missing external blobs
+
+        Returns:
+            True if allowed, False if not allowed
+        """
+        return self._allow_missing
+
+    def CheckMissing(self, missing_list):
+        """Check if any entries in this section have missing external blobs
+
+        If there are missing blobs, the entries are added to the list
+
+        Args:
+            missing_list: List of Entry objects to be added to
+        """
+        for entry in self._entries.values():
+            entry.CheckMissing(missing_list)

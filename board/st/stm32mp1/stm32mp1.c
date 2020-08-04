@@ -5,28 +5,43 @@
 #include <common.h>
 #include <adc.h>
 #include <bootm.h>
-#include <config.h>
 #include <clk.h>
+#include <config.h>
 #include <dm.h>
-#include <environment.h>
+#include <env.h>
+#include <env_internal.h>
+#include <fdt_support.h>
 #include <g_dnl.h>
 #include <generic-phy.h>
+#include <hang.h>
 #include <i2c.h>
+#include <init.h>
 #include <led.h>
+#include <log.h>
+#include <malloc.h>
 #include <misc.h>
-#include <mtd.h>
 #include <mtd_node.h>
+#include <net.h>
+#include <netdev.h>
 #include <phy.h>
+#include <remoteproc.h>
 #include <reset.h>
 #include <syscon.h>
 #include <usb.h>
+#include <watchdog.h>
 #include <asm/io.h>
 #include <asm/gpio.h>
 #include <asm/arch/stm32.h>
 #include <asm/arch/sys_proto.h>
 #include <jffs2/load_kernel.h>
+#include <linux/bitops.h>
+#include <linux/delay.h>
+#include <linux/err.h>
+#include <linux/iopoll.h>
 #include <power/regulator.h>
 #include <usb/dwc2_udc.h>
+
+#include "../../st/common/stusb160x.h"
 
 /* SYSCFG registers */
 #define SYSCFG_BOOTR		0x00
@@ -71,6 +86,12 @@ DECLARE_GLOBAL_DATA_PTR;
 #define USB_START_LOW_THRESHOLD_UV	1230000
 #define USB_START_HIGH_THRESHOLD_UV	2150000
 
+int board_early_init_f(void)
+{
+	/* nothing to do, only used in SPL */
+	return 0;
+}
+
 int checkboard(void)
 {
 	int ret;
@@ -80,9 +101,7 @@ int checkboard(void)
 	const char *fdt_compat;
 	int fdt_compat_len;
 
-	if (IS_ENABLED(CONFIG_STM32MP1_OPTEE))
-		mode = "trusted with OP-TEE";
-	else if (IS_ENABLED(CONFIG_STM32MP1_TRUSTED))
+	if (IS_ENABLED(CONFIG_TFABOOT))
 		mode = "trusted";
 	else
 		mode = "basic";
@@ -94,19 +113,21 @@ int checkboard(void)
 		printf(" (%s)", fdt_compat);
 	puts("\n");
 
-	ret = uclass_get_device_by_driver(UCLASS_MISC,
-					  DM_GET_DRIVER(stm32mp_bsec),
-					  &dev);
-
-	if (!ret)
-		ret = misc_read(dev, STM32_BSEC_SHADOW(BSEC_OTP_BOARD),
-				&otp, sizeof(otp));
-	if (!ret && otp) {
-		printf("Board: MB%04x Var%d Rev.%c-%02d\n",
-		       otp >> 16,
-		       (otp >> 12) & 0xF,
-		       ((otp >> 8) & 0xF) - 1 + 'A',
-		       otp & 0xF);
+	/* display the STMicroelectronics board identification */
+	if (CONFIG_IS_ENABLED(CMD_STBOARD)) {
+		ret = uclass_get_device_by_driver(UCLASS_MISC,
+						  DM_GET_DRIVER(stm32mp_bsec),
+						  &dev);
+		if (!ret)
+			ret = misc_read(dev, STM32_BSEC_SHADOW(BSEC_OTP_BOARD),
+					&otp, sizeof(otp));
+		if (ret > 0 && otp)
+			printf("Board: MB%04x Var%d.%d Rev.%c-%02d\n",
+			       otp >> 16,
+			       (otp >> 12) & 0xF,
+			       (otp >> 4) & 0xF,
+			       ((otp >> 8) & 0xF) - 1 + 'A',
+			       otp & 0xF);
 	}
 
 	return 0;
@@ -162,64 +183,16 @@ static void board_key_check(void)
 }
 
 #if defined(CONFIG_USB_GADGET) && defined(CONFIG_USB_GADGET_DWC2_OTG)
-
-/* STMicroelectronics STUSB1600 Type-C controller */
-#define STUSB1600_CC_CONNECTION_STATUS		0x0E
-
-/* STUSB1600_CC_CONNECTION_STATUS bitfields */
-#define STUSB1600_CC_ATTACH			BIT(0)
-
-static int stusb1600_init(struct udevice **dev_stusb1600)
-{
-	ofnode node;
-	struct udevice *dev, *bus;
-	int ret;
-	u32 chip_addr;
-
-	*dev_stusb1600 = NULL;
-
-	/* if node stusb1600 is present, means DK1 or DK2 board */
-	node = ofnode_by_compatible(ofnode_null(), "st,stusb1600");
-	if (!ofnode_valid(node))
-		return -ENODEV;
-
-	ret = ofnode_read_u32(node, "reg", &chip_addr);
-	if (ret)
-		return -EINVAL;
-
-	ret = uclass_get_device_by_ofnode(UCLASS_I2C, ofnode_get_parent(node),
-					  &bus);
-	if (ret) {
-		printf("bus for stusb1600 not found\n");
-		return -ENODEV;
-	}
-
-	ret = dm_i2c_probe(bus, chip_addr, 0, &dev);
-	if (!ret)
-		*dev_stusb1600 = dev;
-
-	return ret;
-}
-
-static int stusb1600_cable_connected(struct udevice *dev)
-{
-	u8 status;
-
-	if (dm_i2c_read(dev, STUSB1600_CC_CONNECTION_STATUS, &status, 1))
-		return 0;
-
-	return status & STUSB1600_CC_ATTACH;
-}
-
 #include <usb/dwc2_udc.h>
 int g_dnl_board_usb_cable_connected(void)
 {
-	struct udevice *stusb1600;
 	struct udevice *dwc2_udc_otg;
 	int ret;
 
-	if (!stusb1600_init(&stusb1600))
-		return stusb1600_cable_connected(stusb1600);
+	/* if typec stusb160x is present, means DK1 or DK2 board */
+	ret = stusb160x_cable_connected();
+	if (ret >= 0)
+		return ret;
 
 	ret = uclass_get_device_by_driver(UCLASS_USB_GADGET_GENERIC,
 					  DM_GET_DRIVER(dwc2_udc_otg),
@@ -229,6 +202,23 @@ int g_dnl_board_usb_cable_connected(void)
 
 	return dwc2_udc_B_session_valid(dwc2_udc_otg);
 }
+
+#define STM32MP1_G_DNL_DFU_PRODUCT_NUM 0xdf11
+#define STM32MP1_G_DNL_FASTBOOT_PRODUCT_NUM 0x0afb
+
+int g_dnl_bind_fixup(struct usb_device_descriptor *dev, const char *name)
+{
+	if (!strcmp(name, "usb_dnl_dfu"))
+		put_unaligned(STM32MP1_G_DNL_DFU_PRODUCT_NUM, &dev->idProduct);
+	else if (!strcmp(name, "usb_dnl_fastboot"))
+		put_unaligned(STM32MP1_G_DNL_FASTBOOT_PRODUCT_NUM,
+			      &dev->idProduct);
+	else
+		put_unaligned(CONFIG_USB_GADGET_PRODUCT_NUM, &dev->idProduct);
+
+	return 0;
+}
+
 #endif /* CONFIG_USB_GADGET */
 
 static int get_led(struct udevice **dev, char *led_string)
@@ -256,6 +246,9 @@ static int setup_led(enum led_state_t cmd)
 	struct udevice *dev;
 	int ret;
 
+	if (!CONFIG_IS_ENABLED(LED))
+		return 0;
+
 	ret = get_led(&dev, "u-boot,boot-led");
 	if (ret)
 		return ret;
@@ -264,11 +257,39 @@ static int setup_led(enum led_state_t cmd)
 	return ret;
 }
 
+static void __maybe_unused led_error_blink(u32 nb_blink)
+{
+	int ret;
+	struct udevice *led;
+	u32 i;
+
+	if (!nb_blink)
+		return;
+
+	if (CONFIG_IS_ENABLED(LED)) {
+		ret = get_led(&led, "u-boot,error-led");
+		if (!ret) {
+			/* make u-boot,error-led blinking */
+			/* if U32_MAX and 125ms interval, for 17.02 years */
+			for (i = 0; i < 2 * nb_blink; i++) {
+				led_set_state(led, LEDST_TOGGLE);
+				mdelay(125);
+				WATCHDOG_RESET();
+			}
+			led_set_state(led, LEDST_ON);
+		}
+	}
+
+	/* infinite: the boot process must be stopped */
+	if (nb_blink == U32_MAX)
+		hang();
+}
+
+#ifdef CONFIG_ADC
 static int board_check_usb_power(void)
 {
 	struct ofnode_phandle_args adc_args;
 	struct udevice *adc;
-	struct udevice *led;
 	ofnode node;
 	unsigned int raw;
 	int max_uV = 0;
@@ -375,7 +396,7 @@ static int board_check_usb_power(void)
 	if (max_uV > USB_WARNING_LOW_THRESHOLD_UV &&
 	    max_uV <= USB_START_LOW_THRESHOLD_UV &&
 	    min_uV <= USB_LOW_THRESHOLD_UV) {
-		pr_err("*       WARNING 1.5mA power supply detected        *\n");
+		pr_err("*       WARNING 1.5A power supply detected        *\n");
 		nb_blink = 3;
 	}
 
@@ -394,36 +415,24 @@ static int board_check_usb_power(void)
 		pr_err("****************************************************\n\n");
 	}
 
-	ret = get_led(&led, "u-boot,error-led");
-	if (ret) {
-		/* in unattached case, the boot process must be stopped */
-		if (nb_blink == U32_MAX)
-			hang();
-		return ret;
-	}
-
-	/* make u-boot,error-led blinking */
-	for (i = 0; i < nb_blink * 2; i++) {
-		led_set_state(led, LEDST_TOGGLE);
-		mdelay(125);
-	}
-	led_set_state(led, LEDST_ON);
+	led_error_blink(nb_blink);
 
 	return 0;
 }
+#endif /* CONFIG_ADC */
 
 static void sysconf_init(void)
 {
-#ifndef CONFIG_STM32MP1_TRUSTED
+#ifndef CONFIG_TFABOOT
 	u8 *syscfg;
 #ifdef CONFIG_DM_REGULATOR
 	struct udevice *pwr_dev;
 	struct udevice *pwr_reg;
 	struct udevice *dev;
-	int ret;
 	u32 otp = 0;
 #endif
-	u32 bootr;
+	int ret;
+	u32 bootr, val;
 
 	syscfg = (u8 *)syscon_get_first_range(STM32MP_SYSCON_SYSCFG);
 
@@ -453,7 +462,9 @@ static void sysconf_init(void)
 	 *   => U-Boot set the register only if VDD < 2.7V (in DT)
 	 *      but this value need to be consistent with board design
 	 */
-	ret = syscon_get_by_driver_data(STM32MP_SYSCON_PWR, &pwr_dev);
+	ret = uclass_get_device_by_driver(UCLASS_PMIC,
+					  DM_GET_DRIVER(stm32mp_pwr_pmic),
+					  &pwr_dev);
 	if (!ret) {
 		ret = uclass_get_device_by_driver(UCLASS_MISC,
 						  DM_GET_DRIVER(stm32mp_bsec),
@@ -464,11 +475,11 @@ static void sysconf_init(void)
 		}
 
 		ret = misc_read(dev, STM32_BSEC_SHADOW(18), &otp, 4);
-		if (!ret)
+		if (ret > 0)
 			otp = otp & BIT(13);
 
-		/* get VDD = pwr-supply */
-		ret = device_get_supply_regulator(pwr_dev, "pwr-supply",
+		/* get VDD = vdd-supply */
+		ret = device_get_supply_regulator(pwr_dev, "vdd-supply",
 						  &pwr_reg);
 
 		/* check if VDD is Low Voltage */
@@ -498,37 +509,145 @@ static void sysconf_init(void)
 	 */
 	writel(SYSCFG_CMPENSETR_MPU_EN, syscfg + SYSCFG_CMPENSETR);
 
-	while (!(readl(syscfg + SYSCFG_CMPCR) & SYSCFG_CMPCR_READY))
-		;
+	/* poll until ready (1s timeout) */
+	ret = readl_poll_timeout(syscfg + SYSCFG_CMPCR, val,
+				 val & SYSCFG_CMPCR_READY,
+				 1000000);
+	if (ret) {
+		pr_err("SYSCFG: I/O compensation failed, timeout.\n");
+		led_error_blink(10);
+	}
+
 	clrbits_le32(syscfg + SYSCFG_CMPCR, SYSCFG_CMPCR_SW_CTRL);
 #endif
+}
+
+#ifdef CONFIG_DM_REGULATOR
+/* Fix to make I2C1 usable on DK2 for touchscreen usage in kernel */
+static int dk2_i2c1_fix(void)
+{
+	ofnode node;
+	struct gpio_desc hdmi, audio;
+	int ret = 0;
+
+	node = ofnode_path("/soc/i2c@40012000/hdmi-transmitter@39");
+	if (!ofnode_valid(node)) {
+		pr_debug("%s: no hdmi-transmitter@39 ?\n", __func__);
+		return -ENOENT;
+	}
+
+	if (gpio_request_by_name_nodev(node, "reset-gpios", 0,
+				       &hdmi, GPIOD_IS_OUT)) {
+		pr_debug("%s: could not find reset-gpios\n",
+			 __func__);
+		return -ENOENT;
+	}
+
+	node = ofnode_path("/soc/i2c@40012000/cs42l51@4a");
+	if (!ofnode_valid(node)) {
+		pr_debug("%s: no cs42l51@4a ?\n", __func__);
+		return -ENOENT;
+	}
+
+	if (gpio_request_by_name_nodev(node, "reset-gpios", 0,
+				       &audio, GPIOD_IS_OUT)) {
+		pr_debug("%s: could not find reset-gpios\n",
+			 __func__);
+		return -ENOENT;
+	}
+
+	/* before power up, insure that HDMI and AUDIO IC is under reset */
+	ret = dm_gpio_set_value(&hdmi, 1);
+	if (ret) {
+		pr_err("%s: can't set_value for hdmi_nrst gpio", __func__);
+		goto error;
+	}
+	ret = dm_gpio_set_value(&audio, 1);
+	if (ret) {
+		pr_err("%s: can't set_value for audio_nrst gpio", __func__);
+		goto error;
+	}
+
+	/* power-up audio IC */
+	regulator_autoset_by_name("v1v8_audio", NULL);
+
+	/* power-up HDMI IC */
+	regulator_autoset_by_name("v1v2_hdmi", NULL);
+	regulator_autoset_by_name("v3v3_hdmi", NULL);
+
+error:
+	return ret;
+}
+
+static bool board_is_dk2(void)
+{
+	if (CONFIG_IS_ENABLED(TARGET_ST_STM32MP15x) &&
+	    of_machine_is_compatible("st,stm32mp157c-dk2"))
+		return true;
+
+	return false;
+}
+#endif
+
+static bool board_is_ev1(void)
+{
+	if (CONFIG_IS_ENABLED(TARGET_ST_STM32MP15x) &&
+	    (of_machine_is_compatible("st,stm32mp157a-ev1") ||
+	     of_machine_is_compatible("st,stm32mp157c-ev1") ||
+	     of_machine_is_compatible("st,stm32mp157d-ev1") ||
+	     of_machine_is_compatible("st,stm32mp157f-ev1")))
+		return true;
+
+	return false;
+}
+
+/* touchscreen driver: only used for pincontrol configuration */
+static const struct udevice_id goodix_ids[] = {
+	{ .compatible = "goodix,gt9147", },
+	{ }
+};
+
+U_BOOT_DRIVER(goodix) = {
+	.name		= "goodix",
+	.id		= UCLASS_NOP,
+	.of_match	= goodix_ids,
+};
+
+static void board_ev1_init(void)
+{
+	struct udevice *dev;
+
+	/* configure IRQ line on EV1 for touchscreen before LCD reset */
+	uclass_get_device_by_driver(UCLASS_NOP, DM_GET_DRIVER(goodix), &dev);
 }
 
 /* board dependent setup after realloc */
 int board_init(void)
 {
-	struct udevice *dev;
-
 	/* address of boot parameters */
 	gd->bd->bi_boot_params = STM32_DDR_BASE + 0x100;
 
-	/* probe all PINCTRL for hog */
-	for (uclass_first_device(UCLASS_PINCTRL, &dev);
-	     dev;
-	     uclass_next_device(&dev)) {
-		pr_debug("probe pincontrol = %s\n", dev->name);
-	}
+	if (CONFIG_IS_ENABLED(DM_GPIO_HOG))
+		gpio_hog_probe_all();
 
 	board_key_check();
 
+	if (board_is_ev1())
+		board_ev1_init();
+
 #ifdef CONFIG_DM_REGULATOR
+	if (board_is_dk2())
+		dk2_i2c1_fix();
+
 	regulators_enable_boot_on(_DEBUG);
 #endif
 
 	sysconf_init();
 
-	if (IS_ENABLED(CONFIG_LED))
+	if (CONFIG_IS_ENABLED(LED))
 		led_default_state();
+
+	setup_led(LEDST_ON);
 
 	return 0;
 }
@@ -538,19 +657,49 @@ int board_late_init(void)
 #ifdef CONFIG_ENV_VARS_UBOOT_RUNTIME_CONFIG
 	const void *fdt_compat;
 	int fdt_compat_len;
+	int ret;
+	u32 otp;
+	struct udevice *dev;
+	char buf[10];
 
 	fdt_compat = fdt_getprop(gd->fdt_blob, 0, "compatible",
 				 &fdt_compat_len);
 	if (fdt_compat && fdt_compat_len) {
-		if (strncmp(fdt_compat, "st,", 3) != 0)
+		if (strncmp(fdt_compat, "st,", 3) != 0) {
 			env_set("board_name", fdt_compat);
-		else
+		} else {
+			char dtb_name[256];
+			int buf_len = sizeof(dtb_name);
+
 			env_set("board_name", fdt_compat + 3);
+
+			strncpy(dtb_name, fdt_compat + 3, buf_len);
+			buf_len -= strlen(fdt_compat + 3);
+			strncat(dtb_name, ".dtb", buf_len);
+			env_set("fdtfile", dtb_name);
+		}
+	}
+	ret = uclass_get_device_by_driver(UCLASS_MISC,
+					  DM_GET_DRIVER(stm32mp_bsec),
+					  &dev);
+
+	if (!ret)
+		ret = misc_read(dev, STM32_BSEC_SHADOW(BSEC_OTP_BOARD),
+				&otp, sizeof(otp));
+	if (ret > 0 && otp) {
+		snprintf(buf, sizeof(buf), "0x%04x", otp >> 16);
+		env_set("board_id", buf);
+
+		snprintf(buf, sizeof(buf), "0x%04x",
+			 ((otp >> 8) & 0xF) - 1 + 0xA);
+		env_set("board_rev", buf);
 	}
 #endif
 
+#ifdef CONFIG_ADC
 	/* for DK1/DK2 boards */
 	board_check_usb_power();
+#endif /* CONFIG_ADC */
 
 	return 0;
 }
@@ -560,13 +709,21 @@ void board_quiesce_devices(void)
 	setup_led(LEDST_OFF);
 }
 
-/* board interface eth init */
-/* this is a weak define that we are overriding */
-int board_interface_eth_init(phy_interface_t interface_type,
-			     bool eth_clk_sel_reg, bool eth_ref_clk_sel_reg)
+/* eth init function : weak called in eqos driver */
+int board_interface_eth_init(struct udevice *dev,
+			     phy_interface_t interface_type)
 {
 	u8 *syscfg;
 	u32 value;
+	bool eth_clk_sel_reg = false;
+	bool eth_ref_clk_sel_reg = false;
+
+	/* Gigabit Ethernet 125MHz clock selection. */
+	eth_clk_sel_reg = dev_read_bool(dev, "st,eth_clk_sel");
+
+	/* Ethernet 50Mhz RMII clock selection */
+	eth_ref_clk_sel_reg =
+		dev_read_bool(dev, "st,eth_ref_clk_sel");
 
 	syscfg = (u8 *)syscon_get_first_range(STM32MP_SYSCON_SYSCFG);
 
@@ -630,16 +787,22 @@ enum env_location env_get_location(enum env_operation op, int prio)
 		return ENVL_UNKNOWN;
 
 	switch (bootmode & TAMP_BOOT_DEVICE_MASK) {
-#ifdef CONFIG_ENV_IS_IN_EXT4
+#if CONFIG_IS_ENABLED(ENV_IS_IN_MMC)
+	case BOOT_FLASH_SD:
+	case BOOT_FLASH_EMMC:
+		return ENVL_MMC;
+#endif
+#if CONFIG_IS_ENABLED(ENV_IS_IN_EXT4)
 	case BOOT_FLASH_SD:
 	case BOOT_FLASH_EMMC:
 		return ENVL_EXT4;
 #endif
-#ifdef CONFIG_ENV_IS_IN_UBI
+#if CONFIG_IS_ENABLED(ENV_IS_IN_UBI)
 	case BOOT_FLASH_NAND:
+	case BOOT_FLASH_SPINAND:
 		return ENVL_UBI;
 #endif
-#ifdef CONFIG_ENV_IS_IN_SPI_FLASH
+#if CONFIG_IS_ENABLED(ENV_IS_IN_SPI_FLASH)
 	case BOOT_FLASH_NOR:
 		return ENVL_SPI_FLASH;
 #endif
@@ -671,97 +834,22 @@ const char *env_ext4_get_dev_part(void)
 }
 #endif
 
-#ifdef CONFIG_SYS_MTDPARTS_RUNTIME
-
-#define MTDPARTS_LEN		256
-#define MTDIDS_LEN		128
-
-/**
- * The mtdparts_nand0 and mtdparts_nor0 variable tends to be long.
- * If we need to access it before the env is relocated, then we need
- * to use our own stack buffer. gd->env_buf will be too small.
- *
- * @param buf temporary buffer pointer MTDPARTS_LEN long
- * @return mtdparts variable string, NULL if not found
- */
-static const char *env_get_mtdparts(const char *str, char *buf)
+#if defined(CONFIG_ENV_IS_IN_MMC)
+int mmc_get_env_dev(void)
 {
-	if (gd->flags & GD_FLG_ENV_READY)
-		return env_get(str);
-	if (env_get_f(str, buf, MTDPARTS_LEN) != -1)
-		return buf;
+	u32 bootmode = get_bootmode();
 
-	return NULL;
-}
-
-/**
- * update the variables "mtdids" and "mtdparts" with content of mtdparts_<dev>
- */
-static void board_get_mtdparts(const char *dev,
-			       char *mtdids,
-			       char *mtdparts)
-{
-	char env_name[32] = "mtdparts_";
-	char tmp_mtdparts[MTDPARTS_LEN];
-	const char *tmp;
-
-	/* name of env variable to read = mtdparts_<dev> */
-	strcat(env_name, dev);
-	tmp = env_get_mtdparts(env_name, tmp_mtdparts);
-	if (tmp) {
-		/* mtdids: "<dev>=<dev>, ...." */
-		if (mtdids[0] != '\0')
-			strcat(mtdids, ",");
-		strcat(mtdids, dev);
-		strcat(mtdids, "=");
-		strcat(mtdids, dev);
-
-		/* mtdparts: "mtdparts=<dev>:<mtdparts_<dev>>;..." */
-		if (mtdparts[0] != '\0')
-			strncat(mtdparts, ";", MTDPARTS_LEN);
-		else
-			strcat(mtdparts, "mtdparts=");
-		strncat(mtdparts, dev, MTDPARTS_LEN);
-		strncat(mtdparts, ":", MTDPARTS_LEN);
-		strncat(mtdparts, tmp, MTDPARTS_LEN);
-	}
-}
-
-void board_mtdparts_default(const char **mtdids, const char **mtdparts)
-{
-	struct udevice *dev;
-	static char parts[2 * MTDPARTS_LEN + 1];
-	static char ids[MTDIDS_LEN + 1];
-	static bool mtd_initialized;
-
-	if (mtd_initialized) {
-		*mtdids = ids;
-		*mtdparts = parts;
-		return;
-	}
-
-	memset(parts, 0, sizeof(parts));
-	memset(ids, 0, sizeof(ids));
-
-	if (!uclass_get_device(UCLASS_MTD, 0, &dev))
-		board_get_mtdparts("nand0", ids, parts);
-
-	if (!uclass_get_device(UCLASS_SPI_FLASH, 0, &dev))
-		board_get_mtdparts("nor0", ids, parts);
-
-	mtd_initialized = true;
-	*mtdids = ids;
-	*mtdparts = parts;
-	debug("%s:mtdids=%s & mtdparts=%s\n", __func__, ids, parts);
+	return (bootmode & TAMP_BOOT_INSTANCE_MASK) - 1;
 }
 #endif
 
 #if defined(CONFIG_OF_BOARD_SETUP)
-int ft_board_setup(void *blob, bd_t *bd)
+int ft_board_setup(void *blob, struct bd_info *bd)
 {
 #ifdef CONFIG_FDT_FIXUP_PARTITIONS
 	struct node_info nodes[] = {
 		{ "st,stm32f469-qspi",		MTD_DEV_TYPE_NOR,  },
+		{ "st,stm32f469-qspi",		MTD_DEV_TYPE_SPINAND},
 		{ "st,stm32mp15-fmc2",		MTD_DEV_TYPE_NAND, },
 	};
 	fdt_fixup_mtdparts(blob, nodes, ARRAY_SIZE(nodes));
@@ -770,3 +858,24 @@ int ft_board_setup(void *blob, bd_t *bd)
 	return 0;
 }
 #endif
+
+static void board_copro_image_process(ulong fw_image, size_t fw_size)
+{
+	int ret, id = 0; /* Copro id fixed to 0 as only one coproc on mp1 */
+
+	if (!rproc_is_initialized())
+		if (rproc_init()) {
+			printf("Remote Processor %d initialization failed\n",
+			       id);
+			return;
+		}
+
+	ret = rproc_load(id, fw_image, fw_size);
+	printf("Load Remote Processor %d with data@addr=0x%08lx %u bytes:%s\n",
+	       id, fw_image, fw_size, ret ? " Failed!" : " Success!");
+
+	if (!ret)
+		rproc_start(id);
+}
+
+U_BOOT_FIT_LOADABLE_HANDLER(IH_TYPE_COPRO, board_copro_image_process);

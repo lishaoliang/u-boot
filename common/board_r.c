@@ -11,20 +11,35 @@
 
 #include <common.h>
 #include <api.h>
+#include <bootstage.h>
+#include <cpu_func.h>
+#include <exports.h>
+#include <flash.h>
+#include <hang.h>
+#include <image.h>
+#include <irq_func.h>
+#include <log.h>
+#include <net.h>
+#include <asm/cache.h>
+#include <u-boot/crc.h>
 /* TODO: can we just include all these headers whether needed or not? */
 #if defined(CONFIG_CMD_BEDBUG)
 #include <bedbug/type.h>
 #endif
+#include <binman.h>
 #include <command.h>
 #include <console.h>
 #include <dm.h>
-#include <environment.h>
+#include <env.h>
+#include <env_internal.h>
 #include <fdtdec.h>
 #include <ide.h>
+#include <init.h>
 #include <initcall.h>
 #if defined(CONFIG_CMD_KGDB)
 #include <kgdb.h>
 #endif
+#include <irq_func.h>
 #include <malloc.h>
 #include <mapmem.h>
 #ifdef CONFIG_BITBANGMII
@@ -36,6 +51,7 @@
 #include <onenand_uboot.h>
 #include <scsi.h>
 #include <serial.h>
+#include <status_led.h>
 #include <stdio_dev.h>
 #include <timer.h>
 #include <trace.h>
@@ -143,7 +159,7 @@ static int initr_reloc_global_data(void)
 	 */
 	fixup_cpu();
 #endif
-#if !defined(CONFIG_ENV_ADDR) || defined(ENV_IS_EMBEDDED)
+#ifdef CONFIG_SYS_RELOC_GD_ENV_ADDR
 	/*
 	 * Relocate the early env_addr pointer unless we know it is not inside
 	 * the binary. Some systems need this and for the rest, it doesn't hurt.
@@ -217,12 +233,20 @@ static int initr_unlock_ram_in_cache(void)
 }
 #endif
 
+#ifdef CONFIG_PCI_ENDPOINT
+static int initr_pci_ep(void)
+{
+	pci_ep_init();
+
+	return 0;
+}
+#endif
+
 #ifdef CONFIG_PCI
 static int initr_pci(void)
 {
-#ifndef CONFIG_DM_PCI
-	pci_init();
-#endif
+	if (IS_ENABLED(CONFIG_PCI_INIT_R))
+		pci_init();
 
 	return 0;
 }
@@ -246,6 +270,10 @@ static int initr_malloc(void)
 	      gd->malloc_ptr / 1024);
 #endif
 	/* The malloc area is immediately below the monitor copy in DRAM */
+	/*
+	 * This value MUST match the value of gd->start_addr_sp in board_f.c:
+	 * reserve_noncached().
+	 */
 	malloc_start = gd->relocaddr - TOTAL_MALLOC_LEN;
 	mem_malloc_init((ulong)map_sysmem(malloc_start, TOTAL_MALLOC_LEN),
 			TOTAL_MALLOC_LEN);
@@ -295,20 +323,28 @@ static int initr_dm(void)
 #ifdef CONFIG_TIMER
 	gd->timer = NULL;
 #endif
-	bootstage_start(BOOTSTATE_ID_ACCUM_DM_R, "dm_r");
+	bootstage_start(BOOTSTAGE_ID_ACCUM_DM_R, "dm_r");
 	ret = dm_init_and_scan(false);
-	bootstage_accum(BOOTSTATE_ID_ACCUM_DM_R);
+	bootstage_accum(BOOTSTAGE_ID_ACCUM_DM_R);
 	if (ret)
 		return ret;
-#ifdef CONFIG_TIMER_EARLY
-	ret = dm_timer_init();
-	if (ret)
-		return ret;
-#endif
 
 	return 0;
 }
 #endif
+
+static int initr_dm_devices(void)
+{
+	int ret;
+
+	if (IS_ENABLED(CONFIG_TIMER_EARLY)) {
+		ret = dm_timer_init();
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
 
 static int initr_bootstage(void)
 {
@@ -331,17 +367,33 @@ static int initr_announce(void)
 #ifdef CONFIG_NEEDS_MANUAL_RELOC
 static int initr_manual_reloc_cmdtable(void)
 {
-	fixup_cmdtable(ll_entry_start(cmd_tbl_t, cmd),
-		       ll_entry_count(cmd_tbl_t, cmd));
+	fixup_cmdtable(ll_entry_start(struct cmd_tbl, cmd),
+		       ll_entry_count(struct cmd_tbl, cmd));
 	return 0;
 }
 #endif
 
+static int initr_binman(void)
+{
+	if (!CONFIG_IS_ENABLED(BINMAN_FDT))
+		return 0;
+
+	return binman_init();
+}
+
 #if defined(CONFIG_MTD_NOR_FLASH)
+__weak int is_flash_available(void)
+{
+	return 1;
+}
+
 static int initr_flash(void)
 {
 	ulong flash_size = 0;
-	bd_t *bd = gd->bd;
+	struct bd_info *bd = gd->bd;
+
+	if (!is_flash_available())
+		return 0;
 
 	puts("Flash: ");
 
@@ -432,13 +484,14 @@ static int initr_mmc(void)
  */
 static int should_load_env(void)
 {
-#ifdef CONFIG_OF_CONTROL
-	return fdtdec_get_config_int(gd->fdt_blob, "load-environment", 1);
-#elif defined CONFIG_DELAY_ENVIRONMENT
-	return 0;
-#else
+	if (IS_ENABLED(CONFIG_OF_CONTROL))
+		return fdtdec_get_config_int(gd->fdt_blob,
+						"load-environment", 1);
+
+	if (IS_ENABLED(CONFIG_DELAY_ENVIRONMENT))
+		return 0;
+
 	return 1;
-#endif
 }
 
 static int initr_env(void)
@@ -447,14 +500,14 @@ static int initr_env(void)
 	if (should_load_env())
 		env_relocate();
 	else
-		set_default_env(NULL, 0);
-#ifdef CONFIG_OF_CONTROL
-	env_set_hex("fdtcontroladdr",
-		    (unsigned long)map_to_sysmem(gd->fdt_blob));
-#endif
+		env_set_default(NULL, 0);
+
+	if (IS_ENABLED(CONFIG_OF_CONTROL))
+		env_set_hex("fdtcontroladdr",
+			    (unsigned long)map_to_sysmem(gd->fdt_blob));
 
 	/* Initialize from environment */
-	load_addr = env_get_ulong("loadaddr", 16, load_addr);
+	image_load_addr = env_get_ulong("loadaddr", 16, image_load_addr);
 
 	return 0;
 }
@@ -486,37 +539,14 @@ static int initr_api(void)
 }
 #endif
 
-/* enable exceptions */
-#ifdef CONFIG_ARM
-static int initr_enable_interrupts(void)
-{
-	enable_interrupts();
-	return 0;
-}
-#endif
-
 #ifdef CONFIG_CMD_NET
 static int initr_ethaddr(void)
 {
-	bd_t *bd = gd->bd;
+	struct bd_info *bd = gd->bd;
 
 	/* kept around for legacy kernels only ... ignore the next section */
 	eth_env_get_enetaddr("ethaddr", bd->bi_enetaddr);
-#ifdef CONFIG_HAS_ETH1
-	eth_env_get_enetaddr("eth1addr", bd->bi_enet1addr);
-#endif
-#ifdef CONFIG_HAS_ETH2
-	eth_env_get_enetaddr("eth2addr", bd->bi_enet2addr);
-#endif
-#ifdef CONFIG_HAS_ETH3
-	eth_env_get_enetaddr("eth3addr", bd->bi_enet3addr);
-#endif
-#ifdef CONFIG_HAS_ETH4
-	eth_env_get_enetaddr("eth4addr", bd->bi_enet4addr);
-#endif
-#ifdef CONFIG_HAS_ETH5
-	eth_env_get_enetaddr("eth5addr", bd->bi_enet5addr);
-#endif
+
 	return 0;
 }
 #endif /* CONFIG_CMD_NET */
@@ -582,15 +612,6 @@ static int initr_post(void)
 }
 #endif
 
-#if defined(CONFIG_CMD_PCMCIA) && !defined(CONFIG_IDE)
-static int initr_pcmcia(void)
-{
-	puts("PCMCIA:");
-	pcmcia_init();
-	return 0;
-}
-#endif
-
 #if defined(CONFIG_IDE) && !defined(CONFIG_BLK)
 static int initr_ide(void)
 {
@@ -618,15 +639,6 @@ int initr_mem(void)
 	pram = env_get_ulong("pram", 10, CONFIG_PRAM);
 	sprintf(memsz, "%ldk", (long int)((gd->ram_size / 1024) - pram));
 	env_set("mem", memsz);
-
-	return 0;
-}
-#endif
-
-#ifdef CONFIG_CMD_BEDBUG
-static int initr_bedbug(void)
-{
-	bedbug_init();
 
 	return 0;
 }
@@ -674,7 +686,6 @@ static init_fnc_t init_sequence_r[] = {
 #ifdef CONFIG_SYS_NONCACHED_MEMORY
 	initr_noncached,
 #endif
-	bootstage_relocate,
 #ifdef CONFIG_OF_LIVE
 	initr_of_live,
 #endif
@@ -697,6 +708,11 @@ static init_fnc_t init_sequence_r[] = {
 #ifdef CONFIG_EFI_LOADER
 	efi_memory_init,
 #endif
+	initr_binman,
+#ifdef CONFIG_FSP_VERSION2
+	arch_fsp_init_r,
+#endif
+	initr_dm_devices,
 	stdio_init_tables,
 	initr_serial,
 	initr_announce,
@@ -786,9 +802,6 @@ static init_fnc_t init_sequence_r[] = {
 	initr_kgdb,
 #endif
 	interrupt_init,
-#ifdef CONFIG_ARM
-	initr_enable_interrupts,
-#endif
 #if defined(CONFIG_MICROBLAZE) || defined(CONFIG_M68K)
 	timer_init,		/* initialize timer */
 #endif
@@ -812,15 +825,15 @@ static init_fnc_t init_sequence_r[] = {
 #ifdef CONFIG_BITBANGMII
 	initr_bbmii,
 #endif
+#ifdef CONFIG_PCI_ENDPOINT
+	initr_pci_ep,
+#endif
 #ifdef CONFIG_CMD_NET
 	INIT_FUNC_WATCHDOG_RESET
 	initr_net,
 #endif
 #ifdef CONFIG_POST
 	initr_post,
-#endif
-#if defined(CONFIG_CMD_PCMCIA) && !defined(CONFIG_IDE)
-	initr_pcmcia,
 #endif
 #if defined(CONFIG_IDE) && !defined(CONFIG_BLK)
 	initr_ide,
@@ -836,10 +849,13 @@ static init_fnc_t init_sequence_r[] = {
 #endif
 #ifdef CONFIG_CMD_BEDBUG
 	INIT_FUNC_WATCHDOG_RESET
-	initr_bedbug,
+	bedbug_init,
 #endif
 #if defined(CONFIG_PRAM)
 	initr_mem,
+#endif
+#if defined(CONFIG_M68K) && defined(CONFIG_BLOCK_CACHE)
+	blkcache_init,
 #endif
 	run_main_loop,
 };

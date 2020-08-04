@@ -8,6 +8,8 @@
 
 #include <common.h>
 #include <asm/io.h>
+#include <dm/device_compat.h>
+#include <linux/bitops.h>
 #include <power/regulator.h>
 #include "stm32-adc-core.h"
 

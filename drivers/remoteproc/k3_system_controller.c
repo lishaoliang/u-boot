@@ -8,9 +8,11 @@
 
 #include <common.h>
 #include <dm.h>
+#include <log.h>
 #include <remoteproc.h>
 #include <errno.h>
 #include <mailbox.h>
+#include <dm/device_compat.h>
 #include <linux/soc/ti/k3-sec-proxy.h>
 
 #define K3_MSG_R5_TO_M3_M3FW			0x8105

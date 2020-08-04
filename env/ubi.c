@@ -7,7 +7,8 @@
 #include <common.h>
 
 #include <command.h>
-#include <environment.h>
+#include <env.h>
+#include <env_internal.h>
 #include <errno.h>
 #include <malloc.h>
 #include <memalign.h>
@@ -123,7 +124,7 @@ static int env_ubi_load(void)
 	if (ubi_part(CONFIG_ENV_UBI_PART, UBI_VID_OFFSET)) {
 		printf("\n** Cannot find mtd partition \"%s\"\n",
 		       CONFIG_ENV_UBI_PART);
-		set_default_env(NULL, 0);
+		env_set_default(NULL, 0);
 		return -EIO;
 	}
 
@@ -140,7 +141,7 @@ static int env_ubi_load(void)
 		       CONFIG_ENV_UBI_PART, CONFIG_ENV_UBI_VOLUME_REDUND);
 
 	return env_import_redund((char *)tmp_env1, read1_fail, (char *)tmp_env2,
-							 read2_fail);
+				 read2_fail, H_EXTERNAL);
 }
 #else /* ! CONFIG_SYS_REDUNDAND_ENVIRONMENT */
 static int env_ubi_load(void)
@@ -160,18 +161,18 @@ static int env_ubi_load(void)
 	if (ubi_part(CONFIG_ENV_UBI_PART, UBI_VID_OFFSET)) {
 		printf("\n** Cannot find mtd partition \"%s\"\n",
 		       CONFIG_ENV_UBI_PART);
-		set_default_env(NULL, 0);
+		env_set_default(NULL, 0);
 		return -EIO;
 	}
 
 	if (ubi_volume_read(CONFIG_ENV_UBI_VOLUME, buf, CONFIG_ENV_SIZE)) {
 		printf("\n** Unable to read env from %s:%s **\n",
 		       CONFIG_ENV_UBI_PART, CONFIG_ENV_UBI_VOLUME);
-		set_default_env(NULL, 0);
+		env_set_default(NULL, 0);
 		return -EIO;
 	}
 
-	return env_import(buf, 1);
+	return env_import(buf, 1, H_EXTERNAL);
 }
 #endif /* CONFIG_SYS_REDUNDAND_ENVIRONMENT */
 

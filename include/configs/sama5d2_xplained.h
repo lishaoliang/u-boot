@@ -67,12 +67,7 @@
 #define CONFIG_SYS_MONITOR_LEN		(512 << 10)
 
 #ifdef CONFIG_SD_BOOT
-#define CONFIG_SYS_MMCSD_FS_BOOT_PARTITION	1
 #define CONFIG_SPL_FS_LOAD_PAYLOAD_NAME		"u-boot.img"
-
-#elif CONFIG_SPI_BOOT
-#define CONFIG_SYS_SPI_U_BOOT_OFFS	0x10000
-
 #endif
 
 #endif

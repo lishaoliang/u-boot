@@ -25,8 +25,6 @@
 #define PHYS_SDRAM_2_SIZE		(gd->bd->bi_dram[1].size)
 #define PHYS_SDRAM_SIZE			(gd->ram_size)
 #define CONFIG_SYS_MALLOC_LEN		(10 * 1024 * 1024)
-#define CONFIG_SYS_MEMTEST_START	0x70000000
-#define CONFIG_SYS_MEMTEST_END		0x8ff00000
 
 #define CONFIG_SYS_SDRAM_BASE		(PHYS_SDRAM_1)
 #define CONFIG_SYS_INIT_RAM_ADDR	(IRAM_BASE_ADDR)
@@ -48,7 +46,6 @@
 /*
  * Serial Driver
  */
-#define CONFIG_MXC_UART
 #define CONFIG_MXC_UART_BASE		UART1_BASE
 
 /*
@@ -62,7 +59,6 @@
 /*
  * NAND
  */
-#define CONFIG_ENV_SIZE			(16 * 1024)
 #ifdef CONFIG_CMD_NAND
 #define CONFIG_SYS_MAX_NAND_DEVICE	1
 #define CONFIG_SYS_NAND_BASE		NFC_BASE_ADDR_AXI
@@ -70,15 +66,9 @@
 #define CONFIG_MXC_NAND_IP_REGS_BASE	NFC_BASE_ADDR
 #define CONFIG_SYS_NAND_LARGEPAGE
 #define CONFIG_MXC_NAND_HWECC
-#define CONFIG_SYS_NAND_USE_FLASH_BBT
 
 /* Environment is in NAND */
-#define CONFIG_ENV_SIZE_REDUND		CONFIG_ENV_SIZE
-#define CONFIG_ENV_SECT_SIZE		(128 * 1024)
-#define CONFIG_ENV_RANGE		(4 * CONFIG_ENV_SECT_SIZE)
-#define CONFIG_ENV_OFFSET		(8 * CONFIG_ENV_SECT_SIZE) /* 1 MiB */
-#define CONFIG_ENV_OFFSET_REDUND	\
-		(CONFIG_ENV_OFFSET + CONFIG_ENV_RANGE)
+#define CONFIG_ENV_RANGE		(0x00080000) /* 512 KiB */
 #endif
 
 /*
@@ -154,7 +144,6 @@
 #define CONFIG_FSL_IIM
 
 /* Watchdog */
-#define CONFIG_WATCHDOG_TIMEOUT_MSECS 8000
 
 /*
  * Boot Linux
@@ -185,7 +174,6 @@
 /*
  * Extra Environments
  */
-#define CONFIG_PREBOOT		"run try_bootscript"
 #define CONFIG_HOSTNAME		"m53menlo"
 
 #define CONFIG_EXTRA_ENV_SETTINGS					\

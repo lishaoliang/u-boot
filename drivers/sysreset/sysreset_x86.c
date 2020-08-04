@@ -10,7 +10,7 @@
 #include <efi_loader.h>
 #include <pch.h>
 #include <sysreset.h>
-#include <asm/acpi_s3.h>
+#include <acpi/acpi_s3.h>
 #include <asm/io.h>
 #include <asm/processor.h>
 

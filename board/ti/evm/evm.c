@@ -12,8 +12,12 @@
  */
 #include <common.h>
 #include <dm.h>
+#include <env.h>
+#include <init.h>
+#include <net.h>
 #include <ns16550.h>
 #include <netdev.h>
+#include <serial.h>
 #include <asm/io.h>
 #include <asm/arch/mem.h>
 #include <asm/arch/mux.h>
@@ -24,6 +28,7 @@
 #include <twl4030.h>
 #include <asm/mach-types.h>
 #include <asm/omap_musb.h>
+#include <linux/delay.h>
 #include <linux/mtd/rawnand.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
@@ -279,7 +284,7 @@ static void reset_net_chip(void)
 	gpio_set_value(rst_gpio, 1);
 }
 
-int board_eth_init(bd_t *bis)
+int board_eth_init(struct bd_info *bis)
 {
 #if defined(CONFIG_SMC911X)
 	env_set("ethaddr", NULL);
@@ -291,7 +296,7 @@ int board_eth_init(bd_t *bis)
 #endif /* CONFIG_CMD_NET */
 
 #if defined(CONFIG_MMC)
-int board_mmc_init(bd_t *bis)
+int board_mmc_init(struct bd_info *bis)
 {
 	return omap_mmc_init(0, 0, 0, -1, -1);
 }
@@ -303,7 +308,7 @@ void board_mmc_power_init(void)
 #endif /* CONFIG_MMC */
 
 #if defined(CONFIG_USB_ETHER) && defined(CONFIG_USB_MUSB_GADGET) && !defined(CONFIG_CMD_NET)
-int board_eth_init(bd_t *bis)
+int board_eth_init(struct bd_info *bis)
 {
 	return usb_eth_initialize(bis);
 }

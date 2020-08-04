@@ -6,11 +6,15 @@
  */
 
 #include <common.h>
+#include <bootstage.h>
 #include <command.h>
-#include <environment.h>
+#include <env.h>
+#include <log.h>
 #include <net.h>
 #include <phy.h>
+#include <linux/bug.h>
 #include <linux/errno.h>
+#include <net/pcap.h>
 #include "eth_internal.h"
 
 DECLARE_GLOBAL_DATA_PTR;
@@ -19,12 +23,12 @@ DECLARE_GLOBAL_DATA_PTR;
  * CPU and board-specific Ethernet initializations.  Aliased function
  * signals caller to move on
  */
-static int __def_eth_init(bd_t *bis)
+static int __def_eth_init(struct bd_info *bis)
 {
 	return -1;
 }
-int cpu_eth_init(bd_t *bis) __attribute__((weak, alias("__def_eth_init")));
-int board_eth_init(bd_t *bis) __attribute__((weak, alias("__def_eth_init")));
+int cpu_eth_init(struct bd_info *bis) __attribute__((weak, alias("__def_eth_init")));
+int board_eth_init(struct bd_info *bis) __attribute__((weak, alias("__def_eth_init")));
 
 #ifdef CONFIG_API
 static struct {
@@ -116,7 +120,7 @@ static int on_ethaddr(const char *name, const char *value, enum env_op op,
 			switch (op) {
 			case env_op_create:
 			case env_op_overwrite:
-				eth_parse_enetaddr(value, dev->enetaddr);
+				string_to_enetaddr(value, dev->enetaddr);
 				eth_write_hwaddr(dev, "eth", dev->index);
 				break;
 			case env_op_delete:
@@ -352,10 +356,17 @@ int eth_is_active(struct eth_device *dev)
 
 int eth_send(void *packet, int length)
 {
+	int ret;
+
 	if (!eth_current)
 		return -ENODEV;
 
-	return eth_current->send(eth_current, packet, length);
+	ret = eth_current->send(eth_current, packet, length);
+#if defined(CONFIG_CMD_PCAP)
+	if (ret >= 0)
+		pcap_post(packet, lengeth, true);
+#endif
+	return ret;
 }
 
 int eth_rx(void)

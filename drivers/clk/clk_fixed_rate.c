@@ -6,21 +6,22 @@
 #include <common.h>
 #include <clk-uclass.h>
 #include <dm.h>
-
-struct clk_fixed_rate {
-	struct clk clk;
-	unsigned long fixed_rate;
-};
-
-#define to_clk_fixed_rate(dev)	((struct clk_fixed_rate *)dev_get_platdata(dev))
+#include <linux/clk-provider.h>
 
 static ulong clk_fixed_rate_get_rate(struct clk *clk)
 {
 	return to_clk_fixed_rate(clk->dev)->fixed_rate;
 }
 
+/* avoid clk_enable() return -ENOSYS */
+static int dummy_enable(struct clk *clk)
+{
+	return 0;
+}
+
 const struct clk_ops clk_fixed_rate_ops = {
 	.get_rate = clk_fixed_rate_get_rate,
+	.enable = dummy_enable,
 };
 
 static int clk_fixed_rate_ofdata_to_platdata(struct udevice *dev)
@@ -33,6 +34,7 @@ static int clk_fixed_rate_ofdata_to_platdata(struct udevice *dev)
 	/* Make fixed rate clock accessible from higher level struct clk */
 	dev->uclass_priv = clk;
 	clk->dev = dev;
+	clk->enable_count = 0;
 
 	return 0;
 }

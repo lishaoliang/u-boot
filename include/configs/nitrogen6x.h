@@ -19,7 +19,6 @@
 #define CONFIG_USBD_HS
 #define CONFIG_NETCONSOLE
 
-#define CONFIG_MXC_UART
 #define CONFIG_MXC_UART_BASE	       UART2_BASE
 
 /* I2C Configs */
@@ -67,8 +66,6 @@
 #define CONFIG_IMX_HDMI
 #define CONFIG_IMX_VIDEO_SKIP
 
-#define CONFIG_PREBOOT                 ""
-
 #ifdef CONFIG_CMD_MMC
 #define DISTRO_BOOT_DEV_MMC(func) func(MMC, mmc, 0) func(MMC, mmc, 1)
 #else
@@ -115,6 +112,7 @@
 	DISTRO_BOOT_DEV_DHCP(func)
 
 #include <config_distro_bootcmd.h>
+#include <linux/stringify.h>
 
 #define CONFIG_EXTRA_ENV_SETTINGS \
 	"console=ttymxc1\0" \
@@ -132,9 +130,6 @@
 	BOOTENV
 
 /* Miscellaneous configurable options */
-#define CONFIG_SYS_MEMTEST_START       0x10000000
-#define CONFIG_SYS_MEMTEST_END	       0x10010000
-#define CONFIG_SYS_MEMTEST_SCRATCH     0x10800000
 
 /* Physical Memory Map */
 #define PHYS_SDRAM		       MMDC0_ARB_BASE_ADDR
@@ -149,14 +144,9 @@
 	(CONFIG_SYS_INIT_RAM_ADDR + CONFIG_SYS_INIT_SP_OFFSET)
 
 /* Environment organization */
-#define CONFIG_ENV_SIZE			(8 * 1024)
 
 #if defined(CONFIG_ENV_IS_IN_MMC)
-#define CONFIG_ENV_OFFSET		(6 * 64 * 1024)
 #define CONFIG_SYS_MMC_ENV_DEV		0
-#elif defined(CONFIG_ENV_IS_IN_SPI_FLASH)
-#define CONFIG_ENV_OFFSET		(768 * 1024)
-#define CONFIG_ENV_SECT_SIZE		(8 * 1024)
 #endif
 
 /*

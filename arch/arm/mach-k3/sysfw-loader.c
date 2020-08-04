@@ -7,11 +7,23 @@
  */
 
 #include <common.h>
+#include <image.h>
+#include <log.h>
 #include <spl.h>
 #include <malloc.h>
 #include <remoteproc.h>
+#include <asm/cache.h>
 #include <linux/soc/ti/ti_sci_protocol.h>
+#include <g_dnl.h>
+#include <usb.h>
+#include <dfu.h>
+#include <dm/uclass-internal.h>
+#include <spi_flash.h>
+
 #include <asm/arch/sys_proto.h>
+#include "common.h"
+
+DECLARE_GLOBAL_DATA_PTR;
 
 /* Name of the FIT image nodes for SYSFW and its config data */
 #define SYSFW_FIRMWARE			"sysfw.bin"
@@ -169,12 +181,54 @@ static void k3_sysfw_configure_using_fit(void *fit,
 		      ret);
 }
 
-void k3_sysfw_loader(void (*config_pm_done_callback)(void))
+#if CONFIG_IS_ENABLED(DFU)
+static int k3_sysfw_dfu_download(void *addr)
+{
+	char dfu_str[50];
+	int ret;
+
+	sprintf(dfu_str, "sysfw.itb ram 0x%p 0x%x", addr,
+		CONFIG_K3_SYSFW_IMAGE_SIZE_MAX);
+	ret = dfu_config_entities(dfu_str, "ram", "0");
+	if (ret) {
+		dfu_free_entities();
+		goto exit;
+	}
+
+	run_usb_dnl_gadget(0, "usb_dnl_dfu");
+exit:
+	dfu_free_entities();
+	return ret;
+}
+#endif
+
+#if CONFIG_IS_ENABLED(SPI_LOAD)
+static void *k3_sysfw_get_spi_addr(void)
+{
+	struct udevice *dev;
+	fdt_addr_t addr;
+	int ret;
+
+	ret = uclass_find_device_by_seq(UCLASS_SPI, CONFIG_SF_DEFAULT_BUS,
+					true, &dev);
+	if (ret)
+		return NULL;
+
+	addr = dev_read_addr_index(dev, 1);
+	if (addr == FDT_ADDR_T_NONE)
+		return NULL;
+
+	return (void *)(addr + CONFIG_K3_SYSFW_IMAGE_SPI_OFFS);
+}
+#endif
+
+void k3_sysfw_loader(void (*config_pm_pre_callback) (void),
+		     void (*config_pm_done_callback)(void))
 {
 	struct spl_image_info spl_image = { 0 };
 	struct spl_boot_device bootdev = { 0 };
 	struct ti_sci_handle *ti_sci;
-	int ret;
+	int ret = 0;
 
 	/* Reserve a block of aligned memory for loading the SYSFW image */
 	sysfw_load_address = memalign(ARCH_DMA_MINALIGN,
@@ -215,6 +269,36 @@ void k3_sysfw_loader(void (*config_pm_done_callback)(void))
 #endif
 		break;
 #endif
+#if CONFIG_IS_ENABLED(SPI_LOAD)
+	case BOOT_DEVICE_SPI:
+		sysfw_load_address = k3_sysfw_get_spi_addr();
+		if (!sysfw_load_address)
+			ret = -ENODEV;
+		break;
+#endif
+#if CONFIG_IS_ENABLED(YMODEM_SUPPORT)
+	case BOOT_DEVICE_UART:
+#ifdef CONFIG_K3_EARLY_CONS
+		/*
+		 * Establish a serial console if not yet available as required
+		 * for UART-based boot. For this use the early console feature
+		 * that allows setting up a UART for use before SYSFW has been
+		 * brought up. Note that the associated UART module's clocks
+		 * must have gotten enabled by the ROM bootcode which will be
+		 * the case when continuing to boot serially from the same
+		 * UART that the ROM loaded the initial bootloader from.
+		 */
+		if (!gd->have_console)
+			early_console_init();
+#endif
+		ret = spl_ymodem_load_image(&spl_image, &bootdev);
+		break;
+#endif
+#if CONFIG_IS_ENABLED(DFU)
+	case BOOT_DEVICE_DFU:
+		ret = k3_sysfw_dfu_download(sysfw_load_address);
+		break;
+#endif
 	default:
 		panic("Loading SYSFW image from device %u not supported!\n",
 		      bootdev.boot_device);
@@ -240,6 +324,9 @@ void k3_sysfw_loader(void (*config_pm_done_callback)(void))
 	/* Get handle for accessing SYSFW services */
 	ti_sci = get_ti_sci_handle();
 
+	if (config_pm_pre_callback)
+		config_pm_pre_callback();
+
 	/* Parse and apply the different SYSFW configuration fragments */
 	k3_sysfw_configure_using_fit(sysfw_load_address, ti_sci);
 
@@ -250,11 +337,4 @@ void k3_sysfw_loader(void (*config_pm_done_callback)(void))
 	 */
 	if (config_pm_done_callback)
 		config_pm_done_callback();
-
-	/* Output System Firmware version info */
-	printf("SYSFW ABI: %d.%d (firmware rev 0x%04x '%.*s')\n",
-	       ti_sci->version.abi_major, ti_sci->version.abi_minor,
-	       ti_sci->version.firmware_revision,
-	       sizeof(ti_sci->version.firmware_description),
-	       ti_sci->version.firmware_description);
 }

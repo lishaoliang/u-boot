@@ -9,7 +9,9 @@
  */
 
 #include <common.h>
+#include <env.h>
 #include <i2c.h>
+#include <init.h>
 #include <net.h>
 #include <asm/arch/hardware.h>
 #include <asm/ti-common/davinci_nand.h>
@@ -226,10 +228,6 @@ int board_init(void)
 	return 0;
 }
 
-#ifdef CONFIG_DRIVER_TI_EMAC
-
-#endif /* CONFIG_DRIVER_TI_EMAC */
-
 #define CFG_MAC_ADDR_SPI_BUS	0
 #define CFG_MAC_ADDR_SPI_CS	0
 #define CFG_MAC_ADDR_SPI_MAX_HZ	CONFIG_SF_DEFAULT_SPEED
@@ -345,10 +343,9 @@ static struct davinci_mmc mmc_sd0 = {
 	.reg_base = (struct davinci_mmc_regs *)DAVINCI_MMC_SD0_BASE,
 	.host_caps = MMC_MODE_4BIT,     /* DA850 supports only 4-bit SD/MMC */
 	.voltages = MMC_VDD_32_33 | MMC_VDD_33_34,
-	.version = MMC_CTLR_VERSION_2,
 };
 
-int board_mmc_init(bd_t *bis)
+int board_mmc_init(struct bd_info *bis)
 {
 	mmc_sd0.input_clk = clk_get(DAVINCI_MMCSD_CLKID);
 
@@ -370,4 +367,25 @@ U_BOOT_DEVICE(omapl138_uart) = {
 	.name = "ns16550_serial",
 	.platdata = &serial_pdata,
 };
+
+static const struct davinci_mmc_plat mmc_platdata = {
+	.reg_base = (struct davinci_mmc_regs *)DAVINCI_MMC_SD0_BASE,
+	.cfg = {
+		.f_min = 200000,
+		.f_max = 25000000,
+		.voltages = MMC_VDD_32_33 | MMC_VDD_33_34,
+		.host_caps = MMC_MODE_4BIT,
+		.b_max = DAVINCI_MAX_BLOCKS,
+		.name = "da830-mmc",
+	},
+};
+U_BOOT_DEVICE(omapl138_mmc) = {
+	.name = "ti_da830_mmc",
+	.platdata = &mmc_platdata,
+};
+
+void spl_board_init(void)
+{
+	davinci_configure_pin_mux(mmc0_pins, ARRAY_SIZE(mmc0_pins));
+}
 #endif

@@ -26,7 +26,6 @@ obj-y += fdt-fixup.o
 
 endif
 
-obj-y += sbc/
 obj-y += soc-info.o
 obj-y += boot-device/
 obj-y += clk/

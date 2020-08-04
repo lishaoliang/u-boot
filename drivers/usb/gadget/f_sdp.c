@@ -19,6 +19,8 @@
 #include <errno.h>
 #include <common.h>
 #include <console.h>
+#include <env.h>
+#include <log.h>
 #include <malloc.h>
 
 #include <linux/usb/ch9.h>
@@ -275,7 +277,7 @@ static void sdp_rx_command_complete(struct usb_ep *ep, struct usb_request *req)
 		sdp->error_status = SDP_WRITE_FILE_COMPLETE;
 
 		sdp->state = SDP_STATE_RX_FILE_DATA;
-		sdp->dnl_address = be32_to_cpu(cmd->addr);
+		sdp->dnl_address = cmd->addr ? be32_to_cpu(cmd->addr) : CONFIG_SDP_LOADADDR;
 		sdp->dnl_bytes_remaining = be32_to_cpu(cmd->cnt);
 		sdp->dnl_bytes = sdp->dnl_bytes_remaining;
 		sdp->next_state = SDP_STATE_IDLE;
@@ -303,7 +305,7 @@ static void sdp_rx_command_complete(struct usb_ep *ep, struct usb_request *req)
 		sdp->always_send_status = false;
 		sdp->error_status = 0;
 
-		sdp->jmp_address = be32_to_cpu(cmd->addr);
+		sdp->jmp_address = cmd->addr ? be32_to_cpu(cmd->addr) : CONFIG_SDP_LOADADDR;
 		sdp->state = SDP_STATE_TX_SEC_CONF;
 		sdp->next_state = SDP_STATE_JUMP;
 		break;
@@ -725,7 +727,7 @@ static void sdp_handle_in_ep(struct spl_image_info *spl_image)
 			jump_to_image_no_args(&spl_image);
 #else
 			/* In U-Boot, allow jumps to scripts */
-			source(sdp_func->jmp_address, "script@1");
+			image_source_script(sdp_func->jmp_address, "script@1");
 #endif
 		}
 

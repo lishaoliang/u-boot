@@ -7,6 +7,8 @@
  */
 
 #include <common.h>
+#include <init.h>
+#include <linux/delay.h>
 #include <linux/errno.h>
 #include <asm/io.h>
 #include <asm/arch/imx-regs.h>
@@ -20,14 +22,9 @@
 #include <asm/arch/mxc_hdmi.h>
 #include <asm/arch/crm_regs.h>
 #include <dm.h>
+#include <fsl_sec.h>
 #include <imx_thermal.h>
 #include <mmc.h>
-
-enum ldo_reg {
-	LDO_ARM,
-	LDO_SOC,
-	LDO_PU,
-};
 
 struct scu_regs {
 	u32	ctrl;
@@ -50,7 +47,7 @@ U_BOOT_DEVICE(imx6_thermal) = {
 };
 #endif
 
-#if defined(CONFIG_SECURE_BOOT)
+#if defined(CONFIG_IMX_HAB)
 struct imx_sec_config_fuse_t const imx_sec_config_fuse = {
 	.bank = 0,
 	.word = 6,
@@ -85,6 +82,10 @@ u32 get_cpu_rev(void)
 				type = MXC_CPU_MX6D;
 		}
 
+		if (type == MXC_CPU_MX6ULL) {
+			if (readl(SRC_BASE_ADDR + 0x1c) & (1 << 6))
+				type = MXC_CPU_MX6ULZ;
+		}
 	}
 	major = ((reg >> 8) & 0xff);
 	if ((major >= 1) &&
@@ -250,7 +251,7 @@ static void clear_ldo_ramp(void)
  * Possible values are from 0.725V to 1.450V in steps of
  * 0.025V (25mV).
  */
-static int set_ldo_voltage(enum ldo_reg ldo, u32 mv)
+int set_ldo_voltage(enum ldo_reg ldo, u32 mv)
 {
 	struct anatop_regs *anatop = (struct anatop_regs *)ANATOP_BASE_ADDR;
 	u32 val, step, old, reg = readl(&anatop->reg_core);
@@ -370,6 +371,37 @@ static void init_bandgap(void)
 	}
 }
 
+#if defined(CONFIG_MX6Q) || defined(CONFIG_MX6QDL)
+static void noc_setup(void)
+{
+	enable_ipu_clock();
+
+	writel(0x80000201, 0xbb0608);
+	/* Bypass IPU1 QoS generator */
+	writel(0x00000002, 0x00bb048c);
+	/* Bypass IPU2 QoS generator */
+	writel(0x00000002, 0x00bb050c);
+	/* Bandwidth THR for of PRE0 */
+	writel(0x00000200, 0x00bb0690);
+	/* Bandwidth THR for of PRE1 */
+	writel(0x00000200, 0x00bb0710);
+	/* Bandwidth THR for of PRE2 */
+	writel(0x00000200, 0x00bb0790);
+	/* Bandwidth THR for of PRE3 */
+	writel(0x00000200, 0x00bb0810);
+	/* Saturation THR for of PRE0 */
+	writel(0x00000010, 0x00bb0694);
+	/* Saturation THR for of PRE1 */
+	writel(0x00000010, 0x00bb0714);
+	/* Saturation THR for of PRE2 */
+	writel(0x00000010, 0x00bb0794);
+	/* Saturation THR for of PRE */
+	writel(0x00000010, 0x00bb0814);
+
+	disable_ipu_clock();
+}
+#endif
+
 int arch_cpu_init(void)
 {
 	struct mxc_ccm_reg *ccm = (struct mxc_ccm_reg *)CCM_BASE_ADDR;
@@ -447,6 +479,10 @@ int arch_cpu_init(void)
 
 	init_src();
 
+#if defined(CONFIG_MX6Q) || defined(CONFIG_MX6QDL)
+	if (is_mx6dqp())
+		noc_setup();
+#endif
 	return 0;
 }
 
@@ -656,6 +692,15 @@ void imx_setup_hdmi(void)
 }
 #endif
 
+#ifdef CONFIG_ARCH_MISC_INIT
+int arch_misc_init(void)
+{
+#ifdef CONFIG_FSL_CAAM
+	sec_init();
+#endif
+	return 0;
+}
+#endif
 
 /*
  * gpr_init() function is common for boards using MX6S, MX6DL, MX6D,

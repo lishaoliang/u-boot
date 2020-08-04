@@ -13,4 +13,11 @@
 #ifdef CONFIG_SOC_K3_J721E
 #include "j721e_hardware.h"
 #endif
+
+/* Assuming these addresses and definitions stay common across K3 devices */
+#define JTAG_ID_VARIANT_SHIFT	28
+#define JTAG_ID_VARIANT_MASK	(0xf << 28)
+#define JTAG_ID_PARTNO_SHIFT	12
+#define JTAG_ID_PARTNO_MASK	(0xffff << 12)
+
 #endif /* _ASM_ARCH_HARDWARE_H_ */

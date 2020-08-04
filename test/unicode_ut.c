@@ -9,6 +9,8 @@
 #include <charset.h>
 #include <command.h>
 #include <errno.h>
+#include <log.h>
+#include <malloc.h>
 #include <test/test.h>
 #include <test/suites.h>
 #include <test/ut.h>
@@ -65,8 +67,9 @@ static int unicode_test_u16_strdup(struct unit_test_state *uts)
 	u16 *copy = u16_strdup(c4);
 
 	ut_assert(copy != c4);
-	ut_assert(!memcmp(copy, c4, sizeof(c4)));
+	ut_asserteq_mem(copy, c4, sizeof(c4));
 	free(copy);
+
 	return 0;
 }
 UNICODE_TEST(unicode_test_u16_strdup);
@@ -78,7 +81,8 @@ static int unicode_test_u16_strcpy(struct unit_test_state *uts)
 
 	r = u16_strcpy(copy, c1);
 	ut_assert(r == copy);
-	ut_assert(!memcmp(copy, c1, sizeof(c1)));
+	ut_asserteq_mem(copy, c1, sizeof(c1));
+
 	return 0;
 }
 UNICODE_TEST(unicode_test_u16_strcpy);
@@ -567,10 +571,34 @@ static int unicode_test_utf_to_upper(struct unit_test_state *uts)
 }
 UNICODE_TEST(unicode_test_utf_to_upper);
 
-int do_ut_unicode(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+static int unicode_test_u16_strncmp(struct unit_test_state *uts)
+{
+	ut_assert(u16_strncmp(L"abc", L"abc", 3) == 0);
+	ut_assert(u16_strncmp(L"abcdef", L"abcghi", 3) == 0);
+	ut_assert(u16_strncmp(L"abcdef", L"abcghi", 6) < 0);
+	ut_assert(u16_strncmp(L"abcghi", L"abcdef", 6) > 0);
+	ut_assert(u16_strcmp(L"abc", L"abc") == 0);
+	ut_assert(u16_strcmp(L"abcdef", L"deghi") < 0);
+	ut_assert(u16_strcmp(L"deghi", L"abcdef") > 0);
+	return 0;
+}
+UNICODE_TEST(unicode_test_u16_strncmp);
+
+static int unicode_test_u16_strsize(struct unit_test_state *uts)
+{
+	ut_asserteq_64(u16_strsize(c1), 14);
+	ut_asserteq_64(u16_strsize(c2), 18);
+	ut_asserteq_64(u16_strsize(c3), 8);
+	ut_asserteq_64(u16_strsize(c4), 14);
+	return 0;
+}
+UNICODE_TEST(unicode_test_u16_strsize);
+
+int do_ut_unicode(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 {
 	struct unit_test *tests = ll_entry_start(struct unit_test, unicode_test);
 	const int n_ents = ll_entry_count(struct unit_test, unicode_test);
 
-	return cmd_ut_category("Unicode", tests, n_ents, argc, argv);
+	return cmd_ut_category("Unicode", "unicode_test_",
+			       tests, n_ents, argc, argv);
 }

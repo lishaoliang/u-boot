@@ -6,9 +6,11 @@
 #include <common.h>
 #include <dm.h>
 #include <errno.h>
+#include <log.h>
 #include <wdt.h>
 #include <asm/io.h>
 #include <asm/arch/wdt.h>
+#include <linux/err.h>
 
 #define WDT_AST2500	2500
 #define WDT_AST2400	2400

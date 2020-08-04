@@ -43,7 +43,7 @@ int pci_ep_set_bar(struct udevice *dev, uint func_no, struct pci_bar *ep_bar)
 	int flags = ep_bar->flags;
 
 	/* Some basic bar validity checks */
-	if (ep_bar->barno > BAR_5 || ep_bar < BAR_0)
+	if (ep_bar->barno > BAR_5 || ep_bar->barno < BAR_0)
 		return -EINVAL;
 
 	if ((ep_bar->barno == BAR_5 &&
@@ -209,3 +209,14 @@ UCLASS_DRIVER(pci_ep) = {
 	.name		= "pci_ep",
 	.flags		= DM_UC_FLAG_SEQ_ALIAS,
 };
+
+void pci_ep_init(void)
+{
+	struct udevice *dev;
+
+	for (uclass_first_device_check(UCLASS_PCI_EP, &dev);
+	     dev;
+	     uclass_next_device_check(&dev)) {
+		;
+	}
+}

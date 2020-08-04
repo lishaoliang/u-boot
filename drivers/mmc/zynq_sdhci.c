@@ -9,25 +9,25 @@
 #include <common.h>
 #include <dm.h>
 #include <fdtdec.h>
+#include <linux/delay.h>
 #include "mmc_private.h"
+#include <log.h>
+#include <dm/device_compat.h>
+#include <linux/err.h>
 #include <linux/libfdt.h>
 #include <malloc.h>
 #include <sdhci.h>
 #include <zynqmp_tap_delay.h>
 
-DECLARE_GLOBAL_DATA_PTR;
-
 struct arasan_sdhci_plat {
 	struct mmc_config cfg;
 	struct mmc mmc;
-	unsigned int f_max;
 };
 
 struct arasan_sdhci_priv {
 	struct sdhci_host *host;
 	u8 deviceid;
 	u8 bank;
-	u8 no_1p8;
 };
 
 #if defined(CONFIG_ARCH_ZYNQMP)
@@ -35,7 +35,6 @@ struct arasan_sdhci_priv {
 
 static const u8 mode2timing[] = {
 	[MMC_LEGACY] = UHS_SDR12_BUS_SPEED,
-	[SD_LEGACY] = UHS_SDR12_BUS_SPEED,
 	[MMC_HS] = HIGH_SPEED_BUS_SPEED,
 	[SD_HS] = HIGH_SPEED_BUS_SPEED,
 	[MMC_HS_52] = HIGH_SPEED_BUS_SPEED,
@@ -190,7 +189,7 @@ static void arasan_sdhci_set_control_reg(struct sdhci_host *host)
 }
 #endif
 
-#if defined(CONFIG_DM_MMC) && defined(CONFIG_ARCH_ZYNQMP)
+#if defined(CONFIG_ARCH_ZYNQMP)
 const struct sdhci_ops arasan_ops = {
 	.platform_execute_tuning	= &arasan_sdhci_execute_tuning,
 	.set_delay = &arasan_sdhci_set_tapdelay,
@@ -237,18 +236,22 @@ static int arasan_sdhci_probe(struct udevice *dev)
 	host->quirks |= SDHCI_QUIRK_BROKEN_HISPD_MODE;
 #endif
 
-	if (priv->no_1p8)
-		host->quirks |= SDHCI_QUIRK_NO_1_8_V;
+	plat->cfg.f_max = CONFIG_ZYNQ_SDHCI_MAX_FREQ;
+
+	ret = mmc_of_parse(dev, &plat->cfg);
+	if (ret)
+		return ret;
 
 	host->max_clk = clock;
 
-	ret = sdhci_setup_cfg(&plat->cfg, host, plat->f_max,
-			      CONFIG_ZYNQ_SDHCI_MIN_FREQ);
 	host->mmc = &plat->mmc;
+	host->mmc->dev = dev;
+	host->mmc->priv = host;
+
+	ret = sdhci_setup_cfg(&plat->cfg, host, plat->cfg.f_max,
+			      CONFIG_ZYNQ_SDHCI_MIN_FREQ);
 	if (ret)
 		return ret;
-	host->mmc->priv = host;
-	host->mmc->dev = dev;
 	upriv->mmc = host->mmc;
 
 	return sdhci_probe(dev);
@@ -256,7 +259,6 @@ static int arasan_sdhci_probe(struct udevice *dev)
 
 static int arasan_sdhci_ofdata_to_platdata(struct udevice *dev)
 {
-	struct arasan_sdhci_plat *plat = dev_get_platdata(dev);
 	struct arasan_sdhci_priv *priv = dev_get_priv(dev);
 
 	priv->host = calloc(1, sizeof(struct sdhci_host));
@@ -265,7 +267,7 @@ static int arasan_sdhci_ofdata_to_platdata(struct udevice *dev)
 
 	priv->host->name = dev->name;
 
-#if defined(CONFIG_DM_MMC) && defined(CONFIG_ARCH_ZYNQMP)
+#if defined(CONFIG_ARCH_ZYNQMP)
 	priv->host->ops = &arasan_ops;
 #endif
 
@@ -275,10 +277,7 @@ static int arasan_sdhci_ofdata_to_platdata(struct udevice *dev)
 
 	priv->deviceid = dev_read_u32_default(dev, "xlnx,device_id", -1);
 	priv->bank = dev_read_u32_default(dev, "xlnx,mio_bank", -1);
-	priv->no_1p8 = dev_read_bool(dev, "no-1-8-v");
 
-	plat->f_max = dev_read_u32_default(dev, "max-frequency",
-					   CONFIG_ZYNQ_SDHCI_MAX_FREQ);
 	return 0;
 }
 

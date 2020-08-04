@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
- * K3: Architecture initialization
+ * AM6: SoC specific initialization
  *
  * Copyright (C) 2017-2018 Texas Instruments Incorporated - http://www.ti.com/
  *	Lokesh Vutla <lokeshvutla@ti.com>
  */
 
 #include <common.h>
+#include <init.h>
 #include <asm/io.h>
 #include <spl.h>
 #include <asm/arch/hardware.h>
@@ -17,8 +18,29 @@
 #include <dm/uclass-internal.h>
 #include <dm/pinctrl.h>
 #include <linux/soc/ti/ti_sci_protocol.h>
+#include <mmc.h>
 
 #ifdef CONFIG_SPL_BUILD
+#ifdef CONFIG_K3_LOAD_SYSFW
+#ifdef CONFIG_TI_SECURE_DEVICE
+struct fwl_data main_cbass_fwls[] = {
+	{ "MMCSD1_CFG", 2057, 1 },
+	{ "MMCSD0_CFG", 2058, 1 },
+	{ "USB3SS0_SLV0", 2176, 2 },
+	{ "PCIE0_SLV", 2336, 8 },
+	{ "PCIE1_SLV", 2337, 8 },
+	{ "PCIE0_CFG", 2688, 1 },
+	{ "PCIE1_CFG", 2689, 1 },
+}, mcu_cbass_fwls[] = {
+	{ "MCU_ARMSS0_CORE0_SLV", 1024, 1 },
+	{ "MCU_ARMSS0_CORE1_SLV", 1028, 1 },
+	{ "MCU_FSS0_S1", 1033, 8 },
+	{ "MCU_FSS0_S0", 1036, 8 },
+	{ "MCU_CPSW0", 1220, 1 },
+};
+#endif
+#endif
+
 static void mmr_unlock(u32 base, u32 partition)
 {
 	/* Translate the base address */
@@ -66,6 +88,33 @@ static void store_boot_index_from_rom(void)
 	bootindex = *(u32 *)(CONFIG_SYS_K3_BOOT_PARAM_TABLE_INDEX);
 }
 
+#if defined(CONFIG_K3_LOAD_SYSFW)
+void k3_mmc_stop_clock(void)
+{
+	if (spl_boot_device() == BOOT_DEVICE_MMC1) {
+		struct mmc *mmc = find_mmc_device(0);
+
+		if (!mmc)
+			return;
+
+		mmc->saved_clock = mmc->clock;
+		mmc_set_clock(mmc, 0, true);
+	}
+}
+
+void k3_mmc_restart_clock(void)
+{
+	if (spl_boot_device() == BOOT_DEVICE_MMC1) {
+		struct mmc *mmc = find_mmc_device(0);
+
+		if (!mmc)
+			return;
+
+		mmc_set_clock(mmc, mmc->saved_clock, false);
+	}
+}
+#endif
+
 void board_init_f(ulong dummy)
 {
 #if defined(CONFIG_K3_LOAD_SYSFW) || defined(CONFIG_K3_AM654_DDRSS)
@@ -82,11 +131,22 @@ void board_init_f(ulong dummy)
 	ctrl_mmr_unlock();
 
 #ifdef CONFIG_CPU_V7R
+	disable_linefill_optimization();
 	setup_k3_mpu_regions();
 #endif
 
 	/* Init DM early in-order to invoke system controller */
 	spl_early_init();
+
+#ifdef CONFIG_K3_EARLY_CONS
+	/*
+	 * Allow establishing an early console as required for example when
+	 * doing a UART-based boot. Note that this console may not "survive"
+	 * through a SYSFW PM-init step and will need a re-init in some way
+	 * due to changing module clock frequencies.
+	 */
+	early_console_init();
+#endif
 
 #ifdef CONFIG_K3_LOAD_SYSFW
 	/*
@@ -102,28 +162,46 @@ void board_init_f(ulong dummy)
 		pinctrl_select_state(dev, "default");
 
 	/*
-	 * Load, start up, and configure system controller firmware. Provide
-	 * the U-Boot console init function to the SYSFW post-PM configuration
-	 * callback hook, effectively switching on (or over) the console
-	 * output.
+	 * Load, start up, and configure system controller firmware while
+	 * also populating the SYSFW post-PM configuration callback hook.
 	 */
-	k3_sysfw_loader(preloader_console_init);
+	k3_sysfw_loader(k3_mmc_stop_clock, k3_mmc_restart_clock);
+
+	/* Prepare console output */
+	preloader_console_init();
+
+	/* Disable ROM configured firewalls right after loading sysfw */
+#ifdef CONFIG_TI_SECURE_DEVICE
+	remove_fwl_configs(main_cbass_fwls, ARRAY_SIZE(main_cbass_fwls));
+	remove_fwl_configs(mcu_cbass_fwls, ARRAY_SIZE(mcu_cbass_fwls));
+#endif
 #else
 	/* Prepare console output */
 	preloader_console_init();
 #endif
 
+	/* Output System Firmware version info */
+	k3_sysfw_print_ver();
+
 	/* Perform EEPROM-based board detection */
 	do_board_detect();
+
+#if defined(CONFIG_CPU_V7R) && defined(CONFIG_K3_AVS0)
+	ret = uclass_get_device_by_driver(UCLASS_MISC, DM_GET_DRIVER(k3_avs),
+					  &dev);
+	if (ret)
+		printf("AVS init failed: %d\n", ret);
+#endif
 
 #ifdef CONFIG_K3_AM654_DDRSS
 	ret = uclass_get_device(UCLASS_RAM, 0, &dev);
 	if (ret)
 		panic("DRAM init failed: %d\n", ret);
 #endif
+	spl_enable_dcache();
 }
 
-u32 spl_boot_mode(const u32 boot_device)
+u32 spl_mmc_boot_mode(const u32 boot_device)
 {
 #if defined(CONFIG_SUPPORT_EMMC_BOOT)
 	u32 devstat = readl(CTRLMMR_MAIN_DEVSTAT);
@@ -219,10 +297,9 @@ u32 spl_boot_device(void)
 
 void release_resources_for_core_shutdown(void)
 {
-	struct udevice *dev;
-	struct ti_sci_handle *ti_sci;
-	struct ti_sci_dev_ops *dev_ops;
-	struct ti_sci_proc_ops *proc_ops;
+	struct ti_sci_handle *ti_sci = get_ti_sci_handle();
+	struct ti_sci_dev_ops *dev_ops = &ti_sci->ops.dev_ops;
+	struct ti_sci_proc_ops *proc_ops = &ti_sci->ops.proc_ops;
 	int ret;
 	u32 i;
 
@@ -230,15 +307,6 @@ void release_resources_for_core_shutdown(void)
 		AM6_DEV_MCU_RTI0,
 		AM6_DEV_MCU_RTI1,
 	};
-
-	/* Get handle to Device Management and Security Controller (SYSFW) */
-	ret = uclass_get_device_by_name(UCLASS_FIRMWARE, "dmsc", &dev);
-	if (ret)
-		panic("Failed to get handle to SYSFW (%d)\n", ret);
-
-	ti_sci = (struct ti_sci_handle *)(ti_sci_get_handle_from_sysfw(dev));
-	dev_ops = &ti_sci->ops.dev_ops;
-	proc_ops = &ti_sci->ops.proc_ops;
 
 	/* Iterate through list of devices to put (shutdown) */
 	for (i = 0; i < ARRAY_SIZE(put_device_ids); i++) {

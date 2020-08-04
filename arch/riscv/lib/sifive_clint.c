@@ -13,6 +13,7 @@
 #include <syscon.h>
 #include <asm/io.h>
 #include <asm/syscon.h>
+#include <linux/err.h>
 
 /* MSIP registers */
 #define MSIP_REG(base, hart)		((ulong)(base) + (hart) * 4)
@@ -23,21 +24,10 @@
 
 DECLARE_GLOBAL_DATA_PTR;
 
-#define CLINT_BASE_GET(void)						\
-	do {								\
-		long *ret;						\
-									\
-		if (!gd->arch.clint) {					\
-			ret = syscon_get_first_range(RISCV_SYSCON_CLINT); \
-			if (IS_ERR(ret))				\
-				return PTR_ERR(ret);			\
-			gd->arch.clint = ret;				\
-		}							\
-	} while (0)
-
 int riscv_get_time(u64 *time)
 {
-	CLINT_BASE_GET();
+	/* ensure timer register base has a sane value */
+	riscv_init_ipi();
 
 	*time = readq((void __iomem *)MTIME_REG(gd->arch.clint));
 
@@ -46,17 +36,29 @@ int riscv_get_time(u64 *time)
 
 int riscv_set_timecmp(int hart, u64 cmp)
 {
-	CLINT_BASE_GET();
+	/* ensure timer register base has a sane value */
+	riscv_init_ipi();
 
 	writeq(cmp, (void __iomem *)MTIMECMP_REG(gd->arch.clint, hart));
 
 	return 0;
 }
 
+int riscv_init_ipi(void)
+{
+	if (!gd->arch.clint) {
+		long *ret = syscon_get_first_range(RISCV_SYSCON_CLINT);
+
+		if (IS_ERR(ret))
+			return PTR_ERR(ret);
+		gd->arch.clint = ret;
+	}
+
+	return 0;
+}
+
 int riscv_send_ipi(int hart)
 {
-	CLINT_BASE_GET();
-
 	writel(1, (void __iomem *)MSIP_REG(gd->arch.clint, hart));
 
 	return 0;
@@ -64,9 +66,14 @@ int riscv_send_ipi(int hart)
 
 int riscv_clear_ipi(int hart)
 {
-	CLINT_BASE_GET();
-
 	writel(0, (void __iomem *)MSIP_REG(gd->arch.clint, hart));
+
+	return 0;
+}
+
+int riscv_get_ipi(int hart, int *pending)
+{
+	*pending = readl((void __iomem *)MSIP_REG(gd->arch.clint, hart));
 
 	return 0;
 }

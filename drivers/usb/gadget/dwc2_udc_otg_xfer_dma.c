@@ -17,6 +17,11 @@
  * Lukasz Majewski <l.majewski@samsumg.com>
  */
 
+#include <common.h>
+#include <cpu_func.h>
+#include <log.h>
+#include <linux/bug.h>
+
 static u8 clear_feature_num;
 int clear_feature_flag;
 
@@ -28,7 +33,7 @@ static inline void dwc2_udc_ep0_zlp(struct dwc2_udc *dev)
 {
 	u32 ep_ctrl;
 
-	writel(usb_ctrl_dma_addr, &reg->in_endp[EP0_CON].diepdma);
+	writel(phys_to_bus((unsigned long)usb_ctrl_dma_addr), &reg->in_endp[EP0_CON].diepdma);
 	writel(DIEPT_SIZ_PKT_CNT(1), &reg->in_endp[EP0_CON].dieptsiz);
 
 	ep_ctrl = readl(&reg->in_endp[EP0_CON].diepctl);
@@ -49,7 +54,7 @@ static void dwc2_udc_pre_setup(void)
 
 	writel(DOEPT_SIZ_PKT_CNT(1) | sizeof(struct usb_ctrlrequest),
 	       &reg->out_endp[EP0_CON].doeptsiz);
-	writel(usb_ctrl_dma_addr, &reg->out_endp[EP0_CON].doepdma);
+	writel(phys_to_bus((unsigned long)usb_ctrl_dma_addr), &reg->out_endp[EP0_CON].doepdma);
 
 	ep_ctrl = readl(&reg->out_endp[EP0_CON].doepctl);
 	writel(ep_ctrl|DEPCTL_EPENA, &reg->out_endp[EP0_CON].doepctl);
@@ -75,7 +80,7 @@ static inline void dwc2_ep0_complete_out(void)
 
 	writel(DOEPT_SIZ_PKT_CNT(1) | sizeof(struct usb_ctrlrequest),
 	       &reg->out_endp[EP0_CON].doeptsiz);
-	writel(usb_ctrl_dma_addr, &reg->out_endp[EP0_CON].doepdma);
+	writel(phys_to_bus((unsigned long)usb_ctrl_dma_addr), &reg->out_endp[EP0_CON].doepdma);
 
 	ep_ctrl = readl(&reg->out_endp[EP0_CON].doepctl);
 	writel(ep_ctrl|DEPCTL_EPENA|DEPCTL_CNAK,
@@ -113,7 +118,7 @@ static int setdma_rx(struct dwc2_ep *ep, struct dwc2_request *req)
 				(unsigned long) ep->dma_buf +
 				ROUND(ep->len, CONFIG_SYS_CACHELINE_SIZE));
 
-	writel((unsigned long) ep->dma_buf, &reg->out_endp[ep_num].doepdma);
+	writel(phys_to_bus((unsigned long)ep->dma_buf), &reg->out_endp[ep_num].doepdma);
 	writel(DOEPT_SIZ_PKT_CNT(pktcnt) | DOEPT_SIZ_XFER_SIZE(length),
 	       &reg->out_endp[ep_num].doeptsiz);
 	writel(DEPCTL_EPENA|DEPCTL_CNAK|ctrl, &reg->out_endp[ep_num].doepctl);
@@ -161,7 +166,7 @@ static int setdma_tx(struct dwc2_ep *ep, struct dwc2_request *req)
 	while (readl(&reg->grstctl) & TX_FIFO_FLUSH)
 		;
 
-	writel((unsigned long) ep->dma_buf, &reg->in_endp[ep_num].diepdma);
+	writel(phys_to_bus((unsigned long)ep->dma_buf), &reg->in_endp[ep_num].diepdma);
 	writel(DIEPT_SIZ_PKT_CNT(pktcnt) | DIEPT_SIZ_XFER_SIZE(length),
 	       &reg->in_endp[ep_num].dieptsiz);
 
@@ -731,7 +736,7 @@ static int write_fifo_ep0(struct dwc2_ep *ep, struct dwc2_request *req)
 	return 0;
 }
 
-static int dwc2_fifo_read(struct dwc2_ep *ep, u32 *cp, int max)
+static int dwc2_fifo_read(struct dwc2_ep *ep, void *cp, int max)
 {
 	invalidate_dcache_range((unsigned long)cp, (unsigned long)cp +
 				ROUND(max, CONFIG_SYS_CACHELINE_SIZE));
@@ -921,7 +926,7 @@ static int dwc2_udc_get_status(struct dwc2_udc *dev,
 			   (unsigned long) usb_ctrl +
 			   ROUND(sizeof(g_status), CONFIG_SYS_CACHELINE_SIZE));
 
-	writel(usb_ctrl_dma_addr, &reg->in_endp[EP0_CON].diepdma);
+	writel(phys_to_bus(usb_ctrl_dma_addr), &reg->in_endp[EP0_CON].diepdma);
 	writel(DIEPT_SIZ_PKT_CNT(1) | DIEPT_SIZ_XFER_SIZE(2),
 	       &reg->in_endp[EP0_CON].dieptsiz);
 
@@ -1285,7 +1290,7 @@ static void dwc2_ep0_setup(struct dwc2_udc *dev)
 	nuke(ep, -EPROTO);
 
 	/* read control req from fifo (8 bytes) */
-	dwc2_fifo_read(ep, (u32 *)usb_ctrl, 8);
+	dwc2_fifo_read(ep, usb_ctrl, 8);
 
 	debug_cond(DEBUG_SETUP != 0,
 		   "%s: bRequestType = 0x%x(%s), bRequest = 0x%x"

@@ -29,8 +29,6 @@
 #define CONFIG_TZSW_RESERVED_DRAM_SIZE	CONFIG_SYS_MEM_TOP_HIDE
 
 /* memtest works on */
-#define CONFIG_SYS_MEMTEST_START	CONFIG_SYS_SDRAM_BASE
-#define CONFIG_SYS_MEMTEST_END		(CONFIG_SYS_SDRAM_BASE + 0x5E00000)
 #define CONFIG_SYS_LOAD_ADDR		(CONFIG_SYS_SDRAM_BASE + 0x3E00000)
 
 #include <linux/sizes.h>
@@ -48,9 +46,6 @@
 #define CONFIG_SYS_MONITOR_BASE	0x00000000
 
 #define CONFIG_SYS_MMC_ENV_DEV		CONFIG_MMC_DEFAULT_DEV
-#define CONFIG_ENV_SIZE			SZ_16K
-#define CONFIG_ENV_OFFSET		(SZ_1K * 1280) /* 1.25 MiB offset */
-#define CONFIG_ENV_OVERWRITE
 
 /* Partitions name */
 #define PARTS_BOOT		"boot"
@@ -66,7 +61,6 @@
 	""PARTS_BOOT" part 0 1;" \
 	""PARTS_ROOT" part 0 2\0" \
 
-#define CONFIG_SET_DFU_ALT_INFO
 #define CONFIG_SET_DFU_ALT_BUF_LEN	(SZ_1K)
 
 #define CONFIG_DFU_ALT_BOOT_EMMC \
@@ -82,7 +76,7 @@
 	"tzsw raw 0x83f 0x138\0"
 
 #define BOOT_TARGET_DEVICES(func) \
-	func(MMC, mmc, 1) \
+	func(MMC, mmc, 2) \
 	func(MMC, mmc, 0)
 
 #include <config_distro_bootcmd.h>
@@ -148,13 +142,13 @@
 		"run kernel_args;" \
 		"bootz ${kernel_addr_r} ${initrd_addr} ${fdt_addr};\0" \
 	"autoboot=" \
-		"if test -e mmc 0 boot.scr; then; " \
+		"if test -e mmc ${mmcbootdev} boot.scr; then; " \
 			"run boot_script; " \
-		"elif test -e mmc 0 Image.itb; then; " \
+		"elif test -e mmc ${mmcbootdev} Image.itb; then; " \
 			"run boot_fit;" \
-		"elif test -e mmc 0 zImage; then; " \
+		"elif test -e mmc ${mmcbootdev} zImage; then; " \
 			"run boot_zimg;" \
-		"elif test -e mmc 0 uImage; then; " \
+		"elif test -e mmc ${mmcbootdev} uImage; then; " \
 			"run boot_uimg;" \
 		"fi;\0" \
 	"console=" CONFIG_DEFAULT_CONSOLE \

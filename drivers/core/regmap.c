@@ -7,6 +7,7 @@
 #include <common.h>
 #include <dm.h>
 #include <errno.h>
+#include <log.h>
 #include <linux/libfdt.h>
 #include <malloc.h>
 #include <mapmem.h>
@@ -134,7 +135,7 @@ int regmap_init_mem_index(ofnode node, struct regmap **mapp, int index)
 
 	ret = init_range(node, map->ranges, addr_len, size_len, index);
 	if (ret)
-		return ret;
+		goto err;
 
 	if (ofnode_read_bool(node, "little-endian"))
 		map->endianness = REGMAP_LITTLE_ENDIAN;
@@ -147,6 +148,10 @@ int regmap_init_mem_index(ofnode node, struct regmap **mapp, int index)
 
 	*mapp = map;
 
+	return 0;
+err:
+	regmap_uninit(map);
+
 	return ret;
 }
 
@@ -158,6 +163,7 @@ int regmap_init_mem(ofnode node, struct regmap **mapp)
 	int addr_len, size_len, both_len;
 	int len;
 	int index;
+	int ret;
 
 	addr_len = ofnode_read_simple_addr_cells(ofnode_get_parent(node));
 	if (addr_len < 0) {
@@ -200,10 +206,9 @@ int regmap_init_mem(ofnode node, struct regmap **mapp)
 
 	for (range = map->ranges, index = 0; count > 0;
 	     count--, range++, index++) {
-		int ret = init_range(node, range, addr_len, size_len, index);
-
+		ret = init_range(node, range, addr_len, size_len, index);
 		if (ret)
-			return ret;
+			goto err;
 	}
 
 	if (ofnode_read_bool(node, "little-endian"))
@@ -218,6 +223,10 @@ int regmap_init_mem(ofnode node, struct regmap **mapp)
 	*mapp = map;
 
 	return 0;
+err:
+	regmap_uninit(map);
+
+	return ret;
 }
 #endif
 
@@ -301,12 +310,12 @@ int regmap_raw_read_range(struct regmap *map, uint range_num, uint offset,
 	}
 	range = &map->ranges[range_num];
 
-	ptr = map_physmem(range->start + offset, val_len, MAP_NOCACHE);
-
 	if (offset + val_len > range->size) {
 		debug("%s: offset/size combination invalid\n", __func__);
 		return -ERANGE;
 	}
+
+	ptr = map_physmem(range->start + offset, val_len, MAP_NOCACHE);
 
 	switch (val_len) {
 	case REGMAP_SIZE_8:
@@ -410,12 +419,12 @@ int regmap_raw_write_range(struct regmap *map, uint range_num, uint offset,
 	}
 	range = &map->ranges[range_num];
 
-	ptr = map_physmem(range->start + offset, val_len, MAP_NOCACHE);
-
 	if (offset + val_len > range->size) {
 		debug("%s: offset/size combination invalid\n", __func__);
 		return -ERANGE;
 	}
+
+	ptr = map_physmem(range->start + offset, val_len, MAP_NOCACHE);
 
 	switch (val_len) {
 	case REGMAP_SIZE_8:
@@ -462,5 +471,5 @@ int regmap_update_bits(struct regmap *map, uint offset, uint mask, uint val)
 
 	reg &= ~mask;
 
-	return regmap_write(map, offset, reg | val);
+	return regmap_write(map, offset, reg | (val & mask));
 }

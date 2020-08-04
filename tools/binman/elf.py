@@ -5,10 +5,7 @@
 # Handle various things related to ELF images
 #
 
-from __future__ import print_function
-
 from collections import namedtuple, OrderedDict
-import command
 import io
 import os
 import re
@@ -16,8 +13,9 @@ import shutil
 import struct
 import tempfile
 
-import tools
-import tout
+from patman import command
+from patman import tools
+from patman import tout
 
 ELF_TOOLS = True
 try:
@@ -49,7 +47,7 @@ def GetSymbols(fname, patterns):
           key: Name of symbol
           value: Hex value of symbol
     """
-    stdout = command.Output('objdump', '-t', fname, raise_on_error=False)
+    stdout = tools.Run('objdump', '-t', fname)
     lines = stdout.splitlines()
     if patterns:
         re_syms = re.compile('|'.join(patterns))
@@ -72,7 +70,7 @@ def GetSymbols(fname, patterns):
         parts = rest[7:].split()
         section, size =  parts[:2]
         if len(parts) > 2:
-            name = parts[2]
+            name = parts[2] if parts[2] != '.hidden' else parts[3]
             syms[name] = Symbol(section, int(value, 16), int(size,16),
                                 flags[1] == 'w')
 
@@ -134,10 +132,8 @@ def LookupAndWriteSymbols(elf_fname, entry, section):
                                  (msg, sym.size))
 
             # Look up the symbol in our entry tables.
-            value = section.LookupSymbol(name, sym.weak, msg)
-            if value is not None:
-                value += base.address
-            else:
+            value = section.LookupSymbol(name, sym.weak, msg, base.address)
+            if value is None:
                 value = -1
                 pack_string = pack_string.lower()
             value_bytes = struct.pack(pack_string, value)
@@ -221,6 +217,9 @@ SECTIONS
     .empty : {
         *(.empty)
     } :empty
+    /DISCARD/ : {
+        *(.note.gnu.property)
+    }
     .note : {
         *(.comment)
     } :note

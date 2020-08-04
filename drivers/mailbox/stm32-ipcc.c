@@ -6,8 +6,12 @@
 #include <common.h>
 #include <clk.h>
 #include <dm.h>
+#include <log.h>
 #include <mailbox-uclass.h>
+#include <malloc.h>
 #include <asm/io.h>
+#include <dm/device_compat.h>
+#include <linux/bitops.h>
 
 /*
  * IPCC has one set of registers per CPU
@@ -152,7 +156,7 @@ static const struct udevice_id stm32_ipcc_ids[] = {
 
 struct mbox_ops stm32_ipcc_mbox_ops = {
 	.request = stm32_ipcc_request,
-	.free = stm32_ipcc_free,
+	.rfree = stm32_ipcc_free,
 	.send = stm32_ipcc_send,
 	.recv = stm32_ipcc_recv,
 };

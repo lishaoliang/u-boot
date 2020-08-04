@@ -8,6 +8,8 @@
 #include <config.h>
 #include <common.h>
 #include <dm.h>
+#include <env.h>
+#include <init.h>
 #include <linux/ctype.h>
 #include <linux/usb/musb.h>
 #include <asm/omap_musb.h>
@@ -178,7 +180,7 @@ int fastboot_set_reboot_flag(void)
 	return omap_reboot_mode_store("b");
 }
 
-int board_mmc_init(bd_t *bis)
+int board_mmc_init(struct bd_info *bis)
 {
 	return omap_mmc_init(1, 0, 0, -1, -1);
 }

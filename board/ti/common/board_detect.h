@@ -9,6 +9,7 @@
 #define __BOARD_DETECT_H
 
 /* TI EEPROM MAGIC Header identifier */
+#include <linux/bitops.h>
 #define TI_EEPROM_HEADER_MAGIC	0xEE3355AA
 #define TI_DEAD_EEPROM_MAGIC	0xADEAD12C
 
@@ -268,6 +269,15 @@ struct ti_am6_eeprom {
 int ti_i2c_eeprom_am_get(int bus_addr, int dev_addr);
 
 /**
+ * ti_emmc_boardid_get() - Fetch board ID information from eMMC
+ *
+ * ep in SRAM is populated by the this function that is currently
+ * based on BeagleBone AI, but could be made more general across AM*
+ * platforms.
+ */
+int __maybe_unused ti_emmc_boardid_get(void);
+
+/**
  * ti_i2c_eeprom_dra7_get() - Consolidated eeprom data for DRA7 TI EVMs
  * @bus_addr:	I2C bus address
  * @dev_addr:	I2C slave address
@@ -309,6 +319,15 @@ int __maybe_unused ti_i2c_eeprom_am6_get_base(int bus_addr, int dev_addr);
  *	   true otherwise
  */
 bool board_ti_is(char *name_tag);
+
+/**
+ * board_ti_k3_is() - Board detection logic for TI K3 EVMs
+ * @name_tag:	Tag used in eeprom for the board
+ *
+ * Return: false if board information does not match OR eeprom wasn't read.
+ *	   true otherwise
+ */
+bool board_ti_k3_is(char *name_tag);
 
 /**
  * board_ti_rev_is() - Compare board revision for TI EVMs

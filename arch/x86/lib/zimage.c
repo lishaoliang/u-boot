@@ -13,8 +13,11 @@
  */
 
 #include <common.h>
+#include <command.h>
+#include <env.h>
+#include <irq_func.h>
 #include <malloc.h>
-#include <asm/acpi_table.h>
+#include <acpi/acpi_table.h>
 #include <asm/io.h>
 #include <asm/ptrace.h>
 #include <asm/zimage.h>
@@ -287,6 +290,10 @@ int setup_zimage(struct boot_params *setup_base, char *cmd_line, int auto_boot,
 		hdr->hardware_subarch = X86_SUBARCH_INTEL_MID;
 #endif
 
+#ifdef CONFIG_GENERATE_ACPI_TABLE
+	setup_base->acpi_rsdp_addr = acpi_get_rsdp_addr();
+#endif
+
 	setup_device_tree(hdr, (const void *)env_get_hex("fdtaddr", 0));
 	setup_video(&setup_base->screen_info);
 
@@ -297,14 +304,7 @@ int setup_zimage(struct boot_params *setup_base, char *cmd_line, int auto_boot,
 	return 0;
 }
 
-void setup_pcat_compatibility(void)
-	__attribute__((weak, alias("__setup_pcat_compatibility")));
-
-void __setup_pcat_compatibility(void)
-{
-}
-
-int do_zboot(cmd_tbl_t *cmdtp, int flag, int argc, char *const argv[])
+int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
 {
 	struct boot_params *base_ptr;
 	void *bzImage_addr = NULL;
@@ -315,9 +315,6 @@ int do_zboot(cmd_tbl_t *cmdtp, int flag, int argc, char *const argv[])
 	ulong initrd_size = 0;
 
 	disable_interrupts();
-
-	/* Setup board for maximum PC/AT Compatibility */
-	setup_pcat_compatibility();
 
 	if (argc >= 2) {
 		/* argv[1] holds the address of the bzImage */

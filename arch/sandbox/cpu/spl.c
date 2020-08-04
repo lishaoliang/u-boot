@@ -5,6 +5,9 @@
 
 #include <common.h>
 #include <dm.h>
+#include <hang.h>
+#include <init.h>
+#include <log.h>
 #include <os.h>
 #include <spl.h>
 #include <asm/spl.h>
@@ -77,4 +80,11 @@ void __noreturn jump_to_image_no_args(struct spl_image_info *spl_image)
 		printf("No filename provided for U-Boot\n");
 	}
 	hang();
+}
+
+int handoff_arch_save(struct spl_handoff *ho)
+{
+	ho->arch.magic = TEST_HANDOFF_MAGIC;
+
+	return 0;
 }

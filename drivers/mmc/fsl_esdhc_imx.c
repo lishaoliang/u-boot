@@ -14,10 +14,17 @@
 #include <common.h>
 #include <command.h>
 #include <clk.h>
+#include <cpu_func.h>
 #include <errno.h>
 #include <hwconfig.h>
+#include <log.h>
 #include <mmc.h>
 #include <part.h>
+#include <asm/cache.h>
+#include <dm/device_compat.h>
+#include <linux/bitops.h>
+#include <linux/delay.h>
+#include <linux/err.h>
 #include <power/regulator.h>
 #include <malloc.h>
 #include <fsl_esdhc_imx.h>
@@ -77,7 +84,7 @@ struct fsl_esdhc {
 	uint    vendorspec;
 	uint    mmcboot;
 	uint    vendorspec2;
-	uint    tuning_ctrl;	/* on i.MX6/7/8 */
+	uint    tuning_ctrl;	/* on i.MX6/7/8/RT */
 	char	reserved5[44];
 	uint    hostver;	/* Host controller version register */
 	char    reserved6[4];	/* reserved */
@@ -114,6 +121,7 @@ struct esdhc_soc_data {
  * Following is used when Driver Model is enabled for MMC
  * @dev: pointer for the device
  * @non_removable: 0: removable; 1: non-removable
+ * @broken_cd: 0: use GPIO for card detect; 1: Do not use GPIO for card detect
  * @wp_enable: 1: enable checking wp; 0: no check
  * @vs18_enable: 1: use 1.8V voltage; 0: use 3.3V
  * @flags: ESDHC_FLAG_xx in include/fsl_esdhc_imx.h
@@ -137,6 +145,7 @@ struct fsl_esdhc_priv {
 #endif
 	struct udevice *dev;
 	int non_removable;
+	int broken_cd;
 	int wp_enable;
 	int vs18_enable;
 	u32 flags;
@@ -149,7 +158,7 @@ struct fsl_esdhc_priv {
 	struct udevice *vqmmc_dev;
 	struct udevice *vmmc_dev;
 #endif
-#ifdef CONFIG_DM_GPIO
+#if CONFIG_IS_ENABLED(DM_GPIO)
 	struct gpio_desc cd_gpio;
 	struct gpio_desc wp_gpio;
 #endif
@@ -302,8 +311,9 @@ static int esdhc_setup_data(struct fsl_esdhc_priv *priv, struct mmc *mmc,
 				return -ETIMEDOUT;
 			}
 		} else {
-#ifdef CONFIG_DM_GPIO
-			if (dm_gpio_is_valid(&priv->wp_gpio) && dm_gpio_get_value(&priv->wp_gpio)) {
+#if CONFIG_IS_ENABLED(DM_GPIO)
+			if (dm_gpio_is_valid(&priv->wp_gpio) &&
+			    dm_gpio_get_value(&priv->wp_gpio)) {
 				printf("\nThe SD card is locked. Can not write to a locked card.\n\n");
 				return -ETIMEDOUT;
 			}
@@ -627,9 +637,6 @@ static void set_sysctl(struct fsl_esdhc_priv *priv, struct mmc *mmc, uint clock)
 	int sdhc_clk = priv->sdhc_clk;
 	uint clk;
 
-	if (clock < mmc->cfg->f_min)
-		clock = mmc->cfg->f_min;
-
 	while (sdhc_clk / (16 * pre_div * ddr_pre_div) > clock && pre_div < 256)
 		pre_div *= 2;
 
@@ -659,35 +666,6 @@ static void set_sysctl(struct fsl_esdhc_priv *priv, struct mmc *mmc, uint clock)
 
 	priv->clock = clock;
 }
-
-#ifdef CONFIG_FSL_ESDHC_USE_PERIPHERAL_CLK
-static void esdhc_clock_control(struct fsl_esdhc_priv *priv, bool enable)
-{
-	struct fsl_esdhc *regs = priv->esdhc_regs;
-	u32 value;
-	u32 time_out;
-
-	value = esdhc_read32(&regs->sysctl);
-
-	if (enable)
-		value |= SYSCTL_CKEN;
-	else
-		value &= ~SYSCTL_CKEN;
-
-	esdhc_write32(&regs->sysctl, value);
-
-	time_out = 20;
-	value = PRSSTAT_SDSTB;
-	while (!(esdhc_read32(&regs->prsstat) & value)) {
-		if (time_out == 0) {
-			printf("fsl_esdhc: Internal clock never stabilised.\n");
-			break;
-		}
-		time_out--;
-		mdelay(1);
-	}
-}
-#endif
 
 #ifdef MMC_SUPPORTS_TUNING
 static int esdhc_change_pinstate(struct udevice *dev)
@@ -769,7 +747,6 @@ static int esdhc_set_timing(struct mmc *mmc)
 
 	switch (mmc->selected_mode) {
 	case MMC_LEGACY:
-	case SD_LEGACY:
 		esdhc_reset_tuning(mmc);
 		writel(mixctrl, &regs->mixctrl);
 		break;
@@ -814,7 +791,7 @@ static int esdhc_set_voltage(struct mmc *mmc)
 	switch (mmc->signal_voltage) {
 	case MMC_SIGNAL_VOLTAGE_330:
 		if (priv->vs18_enable)
-			return -EIO;
+			return -ENOTSUPP;
 #if CONFIG_IS_ENABLED(DM_REGULATOR)
 		if (!IS_ERR_OR_NULL(priv->vqmmc_dev)) {
 			ret = regulator_set_value(priv->vqmmc_dev, 3300000);
@@ -930,19 +907,9 @@ static int fsl_esdhc_execute_tuning(struct udevice *dev, uint32_t opcode)
 		ctrl = readl(&regs->autoc12err);
 		if ((!(ctrl & MIX_CTRL_EXE_TUNE)) &&
 		    (ctrl & MIX_CTRL_SMPCLK_SEL)) {
-			/*
-			 * need to wait some time, make sure sd/mmc fininsh
-			 * send out tuning data, otherwise, the sd/mmc can't
-			 * response to any command when the card still out
-			 * put the tuning data.
-			 */
-			mdelay(1);
 			ret = 0;
 			break;
 		}
-
-		/* Add 1ms delay for SD and eMMC */
-		mdelay(1);
 	}
 
 	writel(irqstaten, &regs->irqstaten);
@@ -958,16 +925,15 @@ static int esdhc_set_ios_common(struct fsl_esdhc_priv *priv, struct mmc *mmc)
 {
 	struct fsl_esdhc *regs = priv->esdhc_regs;
 	int ret __maybe_unused;
+	u32 clock;
 
-#ifdef CONFIG_FSL_ESDHC_USE_PERIPHERAL_CLK
-	/* Select to use peripheral clock */
-	esdhc_clock_control(priv, false);
-	esdhc_setbits32(&regs->scr, ESDHCCTL_PCS);
-	esdhc_clock_control(priv, true);
-#endif
 	/* Set the clock speed */
-	if (priv->clock != mmc->clock)
-		set_sysctl(priv, mmc, mmc->clock);
+	clock = mmc->clock;
+	if (clock < mmc->cfg->f_min)
+		clock = mmc->cfg->f_min;
+
+	if (priv->clock != clock)
+		set_sysctl(priv, mmc, clock);
 
 #ifdef MMC_SUPPORTS_TUNING
 	if (mmc->clk_disable) {
@@ -996,7 +962,8 @@ static int esdhc_set_ios_common(struct fsl_esdhc_priv *priv, struct mmc *mmc)
 	if (priv->signal_voltage != mmc->signal_voltage) {
 		ret = esdhc_set_voltage(mmc);
 		if (ret) {
-			printf("esdhc_set_voltage error %d\n", ret);
+			if (ret != -ENOTSUPP)
+				printf("esdhc_set_voltage error %d\n", ret);
 			return ret;
 		}
 	}
@@ -1089,7 +1056,10 @@ static int esdhc_getcd_common(struct fsl_esdhc_priv *priv)
 #if CONFIG_IS_ENABLED(DM_MMC)
 	if (priv->non_removable)
 		return 1;
-#ifdef CONFIG_DM_GPIO
+
+	if (priv->broken_cd)
+		return 1;
+#if CONFIG_IS_ENABLED(DM_GPIO)
 	if (dm_gpio_is_valid(&priv->cd_gpio))
 		return dm_gpio_get_value(&priv->cd_gpio);
 #endif
@@ -1287,6 +1257,18 @@ static int fsl_esdhc_init(struct fsl_esdhc_priv *priv,
 			val |= priv->tuning_start_tap;
 			val &= ~ESDHC_TUNING_STEP_MASK;
 			val |= (priv->tuning_step) << ESDHC_TUNING_STEP_SHIFT;
+
+			/* Disable the CMD CRC check for tuning, if not, need to
+			 * add some delay after every tuning command, because
+			 * hardware standard tuning logic will directly go to next
+			 * step once it detect the CMD CRC error, will not wait for
+			 * the card side to finally send out the tuning data, trigger
+			 * the buffer read ready interrupt immediately. If usdhc send
+			 * the next tuning command some eMMC card will stuck, can't
+			 * response, block the tuning procedure or the first command
+			 * after the whole tuning procedure always can't get any response.
+			 */
+			val |= ESDHC_TUNING_CMD_CRC_CHECK_DISABLE;
 			writel(val, &regs->tuning_ctrl);
 		}
 	}
@@ -1310,7 +1292,7 @@ static int fsl_esdhc_cfg_to_priv(struct fsl_esdhc_cfg *cfg,
 	return 0;
 };
 
-int fsl_esdhc_initialize(bd_t *bis, struct fsl_esdhc_cfg *cfg)
+int fsl_esdhc_initialize(struct bd_info *bis, struct fsl_esdhc_cfg *cfg)
 {
 	struct fsl_esdhc_plat *plat;
 	struct fsl_esdhc_priv *priv;
@@ -1354,7 +1336,7 @@ int fsl_esdhc_initialize(bd_t *bis, struct fsl_esdhc_cfg *cfg)
 	return 0;
 }
 
-int fsl_esdhc_mmc_init(bd_t *bis)
+int fsl_esdhc_mmc_init(struct bd_info *bis)
 {
 	struct fsl_esdhc_cfg *cfg;
 
@@ -1378,20 +1360,15 @@ __weak int esdhc_status_fixup(void *blob, const char *compat)
 	return 0;
 }
 
-void fdt_fixup_esdhc(void *blob, bd_t *bd)
+void fdt_fixup_esdhc(void *blob, struct bd_info *bd)
 {
 	const char *compat = "fsl,esdhc";
 
 	if (esdhc_status_fixup(blob, compat))
 		return;
 
-#ifdef CONFIG_FSL_ESDHC_USE_PERIPHERAL_CLK
-	do_fixup_by_compat_u32(blob, compat, "peripheral-frequency",
-			       gd->arch.sdhc_clk, 1);
-#else
 	do_fixup_by_compat_u32(blob, compat, "clock-frequency",
 			       gd->arch.sdhc_clk, 1);
-#endif
 }
 #endif
 
@@ -1447,11 +1424,14 @@ static int fsl_esdhc_probe(struct udevice *dev)
 			     ESDHC_STROBE_DLL_CTRL_SLV_DLY_TARGET_DEFAULT);
 	priv->strobe_dll_delay_target = val;
 
+	if (dev_read_bool(dev, "broken-cd"))
+		priv->broken_cd = 1;
+
 	if (dev_read_bool(dev, "non-removable")) {
 		priv->non_removable = 1;
 	 } else {
 		priv->non_removable = 0;
-#ifdef CONFIG_DM_GPIO
+#if CONFIG_IS_ENABLED(DM_GPIO)
 		gpio_request_by_name(dev, "cd-gpios", 0, &priv->cd_gpio,
 				     GPIOD_IS_IN);
 #endif
@@ -1461,7 +1441,7 @@ static int fsl_esdhc_probe(struct udevice *dev)
 		priv->wp_enable = 1;
 	} else {
 		priv->wp_enable = 0;
-#ifdef CONFIG_DM_GPIO
+#if CONFIG_IS_ENABLED(DM_GPIO)
 		gpio_request_by_name(dev, "wp-gpios", 0, &priv->wp_gpio,
 				   GPIOD_IS_IN);
 #endif
@@ -1478,6 +1458,7 @@ static int fsl_esdhc_probe(struct udevice *dev)
 	if (ret) {
 		dev_dbg(dev, "no vqmmc-supply\n");
 	} else {
+		priv->vqmmc_dev = vqmmc_dev;
 		ret = regulator_set_enable(vqmmc_dev, true);
 		if (ret) {
 			dev_err(dev, "fail to enable vqmmc-supply\n");
@@ -1511,27 +1492,27 @@ static int fsl_esdhc_probe(struct udevice *dev)
 
 	init_clk_usdhc(dev->seq);
 
-	if (CONFIG_IS_ENABLED(CLK)) {
-		/* Assigned clock already set clock */
-		ret = clk_get_by_name(dev, "per", &priv->per_clk);
-		if (ret) {
-			printf("Failed to get per_clk\n");
-			return ret;
-		}
-		ret = clk_enable(&priv->per_clk);
-		if (ret) {
-			printf("Failed to enable per_clk\n");
-			return ret;
-		}
-
-		priv->sdhc_clk = clk_get_rate(&priv->per_clk);
-	} else {
-		priv->sdhc_clk = mxc_get_clock(MXC_ESDHC_CLK + dev->seq);
-		if (priv->sdhc_clk <= 0) {
-			dev_err(dev, "Unable to get clk for %s\n", dev->name);
-			return -EINVAL;
-		}
+#if CONFIG_IS_ENABLED(CLK)
+	/* Assigned clock already set clock */
+	ret = clk_get_by_name(dev, "per", &priv->per_clk);
+	if (ret) {
+		printf("Failed to get per_clk\n");
+		return ret;
 	}
+	ret = clk_enable(&priv->per_clk);
+	if (ret) {
+		printf("Failed to enable per_clk\n");
+		return ret;
+	}
+
+	priv->sdhc_clk = clk_get_rate(&priv->per_clk);
+#else
+	priv->sdhc_clk = mxc_get_clock(MXC_ESDHC_CLK + dev->seq);
+	if (priv->sdhc_clk <= 0) {
+		dev_err(dev, "Unable to get clk for %s\n", dev->name);
+		return -EINVAL;
+	}
+#endif
 
 	ret = fsl_esdhc_init(priv, plat);
 	if (ret) {
@@ -1645,6 +1626,10 @@ static const struct udevice_id fsl_esdhc_ids[] = {
 	{ .compatible = "fsl,imx7d-usdhc", .data = (ulong)&usdhc_imx7d_data,},
 	{ .compatible = "fsl,imx7ulp-usdhc", },
 	{ .compatible = "fsl,imx8qm-usdhc", .data = (ulong)&usdhc_imx8qm_data,},
+	{ .compatible = "fsl,imx8mm-usdhc", .data = (ulong)&usdhc_imx8qm_data,},
+	{ .compatible = "fsl,imx8mn-usdhc", .data = (ulong)&usdhc_imx8qm_data,},
+	{ .compatible = "fsl,imx8mq-usdhc", .data = (ulong)&usdhc_imx8qm_data,},
+	{ .compatible = "fsl,imxrt-usdhc", },
 	{ .compatible = "fsl,esdhc", },
 	{ /* sentinel */ }
 };

@@ -4,18 +4,22 @@
  */
 #include <common.h>
 #include <dm.h>
+#include <hang.h>
+#include <init.h>
+#include <log.h>
 #include <syscon.h>
 #include <asm/io.h>
 #include <asm/arch-rockchip/bootrom.h>
 #include <asm/arch-rockchip/clock.h>
 #include <asm/arch-rockchip/grf_rk3188.h>
 #include <asm/arch-rockchip/hardware.h>
+#include <linux/err.h>
 
 #define GRF_BASE	0x20008000
 
 const char * const boot_devices[BROM_LAST_BOOTSOURCE + 1] = {
-	[BROM_BOOTSOURCE_EMMC] = "dwmmc@1021c000",
-	[BROM_BOOTSOURCE_SD] = "dwmmc@10214000",
+	[BROM_BOOTSOURCE_EMMC] = "/dwmmc@1021c000",
+	[BROM_BOOTSOURCE_SD] = "/dwmmc@10214000",
 };
 
 #ifdef CONFIG_DEBUG_UART_BOARD_INIT
@@ -73,15 +77,32 @@ int arch_cpu_init(void)
 		     BYPASSSEL_MASK | BYPASSDMEN_MASK,
 		     1 << BYPASSSEL_SHIFT | 1 << BYPASSDMEN_SHIFT);
 #endif
+	return 0;
+}
+#endif
+
+__weak int rk3188_board_late_init(void)
+{
+	return 0;
+}
+
+int rk_board_late_init(void)
+{
+	struct rk3188_grf *grf;
+
+	grf = syscon_get_first_range(ROCKCHIP_SYSCON_GRF);
+	if (IS_ERR(grf)) {
+		pr_err("grf syscon returned %ld\n", PTR_ERR(grf));
+		return 0;
+	}
 
 	/* enable noc remap to mimic legacy loaders */
 	rk_clrsetreg(&grf->soc_con0,
 		     NOC_REMAP_MASK << NOC_REMAP_SHIFT,
 		     NOC_REMAP_MASK << NOC_REMAP_SHIFT);
 
-	return 0;
+	return rk3188_board_late_init();
 }
-#endif
 
 #ifdef CONFIG_SPL_BUILD
 static int setup_led(void)

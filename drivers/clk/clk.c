@@ -6,6 +6,7 @@
 
 #include <common.h>
 #include <clk-uclass.h>
+#include <log.h>
 #include <dm/device.h>
 #include <dm/uclass.h>
 #include <dm/lists.h>
@@ -20,8 +21,10 @@ int clk_register(struct clk *clk, const char *drv_name,
 	int ret;
 
 	ret = uclass_get_device_by_name(UCLASS_CLK, parent_name, &parent);
-	if (ret)
-		printf("%s: UCLASS parent: 0x%p\n", __func__, parent);
+	if (ret) {
+		printf("%s: name: %s parent: %s [0x%p]\n",
+		       __func__, name, parent->name, parent);
+	}
 
 	debug("%s: name: %s parent: %s [0x%p]\n", __func__, name, parent->name,
 	      parent);
@@ -40,6 +43,7 @@ int clk_register(struct clk *clk, const char *drv_name,
 		return ret;
 	}
 
+	clk->enable_count = 0;
 	/* Store back pointer to clk from udevice */
 	clk->dev->uclass_priv = clk;
 
@@ -54,4 +58,12 @@ ulong clk_generic_get_rate(struct clk *clk)
 const char *clk_hw_get_name(const struct clk *hw)
 {
 	return hw->dev->name;
+}
+
+bool clk_dev_binded(struct clk *clk)
+{
+	if (clk->dev && (clk->dev->flags & DM_FLAG_BOUND))
+		return true;
+
+	return false;
 }

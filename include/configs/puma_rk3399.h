@@ -10,14 +10,11 @@
 
 #if defined(CONFIG_ENV_IS_IN_MMC)
 #define CONFIG_SYS_MMC_ENV_DEV 1
-#elif defined(CONFIG_ENV_IS_IN_SPI_FLASH)
-#define CONFIG_ENV_SECT_SIZE		(8 * 1024)
 #endif
 
 #define SDRAM_BANK_SIZE			(2UL << 30)
 
 #define CONFIG_SERIAL_TAG
-#define CONFIG_ENV_OVERWRITE
 
 #define CONFIG_BMP_16BPP
 #define CONFIG_BMP_24BPP

@@ -4,6 +4,7 @@
  */
 
 #include <common.h>
+#include <command.h>
 #include <dm.h>
 #include <fdtdec.h>
 #include <mapmem.h>
@@ -19,10 +20,13 @@
 /* Simple test of sandbox SPI flash */
 static int dm_test_spi_flash(struct unit_test_state *uts)
 {
-	struct udevice *dev, *emul;
+	struct udevice *dev;
 	int full_size = 0x200000;
 	int size = 0x10000;
 	u8 *src, *dst;
+	uint map_size;
+	ulong map_base;
+	uint offset;
 	int i;
 
 	src = map_sysmem(0x20000, full_size);
@@ -31,7 +35,7 @@ static int dm_test_spi_flash(struct unit_test_state *uts)
 
 	dst = map_sysmem(0x20000 + full_size, full_size);
 	ut_assertok(spi_flash_read_dm(dev, 0, size, dst));
-	ut_assertok(memcmp(src, dst, size));
+	ut_asserteq_mem(src, dst, size);
 
 	/* Erase */
 	ut_assertok(spi_flash_erase_dm(dev, 0, size));
@@ -44,15 +48,13 @@ static int dm_test_spi_flash(struct unit_test_state *uts)
 		src[i] = i;
 	ut_assertok(spi_flash_write_dm(dev, 0, size, src));
 	ut_assertok(spi_flash_read_dm(dev, 0, size, dst));
-	ut_assertok(memcmp(src, dst, size));
+	ut_asserteq_mem(src, dst, size);
 
-	/* Try the write-protect stuff */
-	ut_assertok(uclass_first_device_err(UCLASS_SPI_EMUL, &emul));
-	ut_asserteq(0, spl_flash_get_sw_write_prot(dev));
-	sandbox_sf_set_block_protect(emul, 1);
-	ut_asserteq(1, spl_flash_get_sw_write_prot(dev));
-	sandbox_sf_set_block_protect(emul, 0);
-	ut_asserteq(0, spl_flash_get_sw_write_prot(dev));
+	/* Check mapping */
+	ut_assertok(dm_spi_get_mmap(dev, &map_base, &map_size, &offset));
+	ut_asserteq(0x1000, map_base);
+	ut_asserteq(0x2000, map_size);
+	ut_asserteq(0x100, offset);
 
 	/*
 	 * Since we are about to destroy all devices, we must tell sandbox

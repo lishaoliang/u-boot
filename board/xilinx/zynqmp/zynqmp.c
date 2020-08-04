@@ -5,6 +5,13 @@
  */
 
 #include <common.h>
+#include <command.h>
+#include <cpu_func.h>
+#include <debug_uart.h>
+#include <env.h>
+#include <init.h>
+#include <log.h>
+#include <net.h>
 #include <sata.h>
 #include <ahci.h>
 #include <scsi.h>
@@ -14,13 +21,20 @@
 #include <asm/arch/hardware.h>
 #include <asm/arch/sys_proto.h>
 #include <asm/arch/psu_init_gpl.h>
+#include <asm/cache.h>
 #include <asm/io.h>
+#include <asm/ptrace.h>
 #include <dm/device.h>
 #include <dm/uclass.h>
 #include <usb.h>
 #include <dwc3-uboot.h>
 #include <zynqmppl.h>
+#include <zynqmp_firmware.h>
 #include <g_dnl.h>
+#include <linux/bitops.h>
+#include <linux/delay.h>
+#include <linux/sizes.h>
+#include "../common/board.h"
 
 #include "pm_cfg_obj.h"
 
@@ -172,6 +186,14 @@ static const struct {
 		.id = 0x66,
 		.name = "39dr",
 	},
+	{
+		.id = 0x7b,
+		.name = "48dr",
+	},
+	{
+		.id = 0x7e,
+		.name = "49dr",
+	},
 };
 #endif
 
@@ -306,29 +328,50 @@ static char *zynqmp_get_silicon_idcode_name(void)
 
 int board_early_init_f(void)
 {
-	int ret = 0;
-#if !defined(CONFIG_SPL_BUILD) && defined(CONFIG_CLK_ZYNQMP)
-	u32 pm_api_version;
-
-	pm_api_version = zynqmp_pmufw_version();
-	printf("PMUFW:\tv%d.%d\n",
-	       pm_api_version >> ZYNQMP_PM_VERSION_MAJOR_SHIFT,
-	       pm_api_version & ZYNQMP_PM_VERSION_MINOR_MASK);
-
-	if (pm_api_version < ZYNQMP_PM_VERSION)
-		panic("PMUFW version error. Expected: v%d.%d\n",
-		      ZYNQMP_PM_VERSION_MAJOR, ZYNQMP_PM_VERSION_MINOR);
-#endif
-
 #if defined(CONFIG_ZYNQMP_PSU_INIT_ENABLED)
+	int ret;
+
 	ret = psu_init();
+	if (ret)
+		return ret;
+
+	/* Delay is required for clocks to be propagated */
+	udelay(1000000);
 #endif
 
-	return ret;
+#ifdef CONFIG_DEBUG_UART
+	/* Uart debug for sure */
+	debug_uart_init();
+	puts("Debug uart enabled\n"); /* or printch() */
+#endif
+
+	return 0;
 }
+
+static int multi_boot(void)
+{
+	u32 multiboot;
+
+	multiboot = readl(&csu_base->multi_boot);
+
+	printf("Multiboot:\t%d\n", multiboot);
+
+	return 0;
+}
+
+#define PS_SYSMON_ANALOG_BUS_VAL	0x3210
+#define PS_SYSMON_ANALOG_BUS_REG	0xFFA50914
 
 int board_init(void)
 {
+#if defined(CONFIG_ZYNQMP_FIRMWARE)
+	struct udevice *dev;
+
+	uclass_get_device_by_name(UCLASS_FIRMWARE, "zynqmp-power", &dev);
+	if (!dev)
+		panic("PMU Firmware device not found - Enable it");
+#endif
+
 #if defined(CONFIG_SPL_BUILD)
 	/* Check *at build time* if the filename is an non-empty string */
 	if (sizeof(CONFIG_ZYNQMP_SPL_PM_CFG_OBJ_FILE) > 1)
@@ -337,6 +380,9 @@ int board_init(void)
 #endif
 
 	printf("EL Level:\tEL%d\n", current_el());
+
+	/* Bug in ROM sets wrong value in this register */
+	writel(PS_SYSMON_ANALOG_BUS_VAL, PS_SYSMON_ANALOG_BUS_REG);
 
 #if defined(CONFIG_FPGA) && defined(CONFIG_FPGA_ZYNQMPPL) && \
     !defined(CONFIG_SPL_BUILD) || (defined(CONFIG_SPL_FPGA_SUPPORT) && \
@@ -348,6 +394,9 @@ int board_init(void)
 		fpga_add(fpga_xilinx, &zynqmppl);
 	}
 #endif
+
+	if (current_el() == 3)
+		multi_boot();
 
 	return 0;
 }
@@ -378,7 +427,7 @@ int board_early_init_r(void)
 }
 
 unsigned long do_go_exec(ulong (*entry)(int, char * const []), int argc,
-			 char * const argv[])
+			 char *const argv[])
 {
 	int ret = 0;
 
@@ -480,7 +529,7 @@ static int reset_reason(void)
 
 	env_set("reset_reason", reason);
 
-	ret = zynqmp_mmio_write(~0, ~0, (ulong)&crlapb_base->reset_reason);
+	ret = zynqmp_mmio_write((ulong)&crlapb_base->reset_reason, ~0, ~0);
 	if (ret)
 		return -EINVAL;
 
@@ -517,9 +566,26 @@ static int set_fdtfile(void)
 	return 0;
 }
 
+static u8 zynqmp_get_bootmode(void)
+{
+	u8 bootmode;
+	u32 reg = 0;
+	int ret;
+
+	ret = zynqmp_mmio_read((ulong)&crlapb_base->boot_mode, &reg);
+	if (ret)
+		return -EINVAL;
+
+	if (reg >> BOOT_MODE_ALT_SHIFT)
+		reg >>= BOOT_MODE_ALT_SHIFT;
+
+	bootmode = reg & BOOT_MODES_MASK;
+
+	return bootmode;
+}
+
 int board_late_init(void)
 {
-	u32 reg = 0;
 	u8 bootmode;
 	struct udevice *dev;
 	int bootseq = -1;
@@ -543,14 +609,7 @@ int board_late_init(void)
 	if (ret)
 		return ret;
 
-	ret = zynqmp_mmio_read((ulong)&crlapb_base->boot_mode, &reg);
-	if (ret)
-		return -EINVAL;
-
-	if (reg >> BOOT_MODE_ALT_SHIFT)
-		reg >>= BOOT_MODE_ALT_SHIFT;
-
-	bootmode = reg & BOOT_MODES_MASK;
+	bootmode = zynqmp_get_bootmode();
 
 	puts("Bootmode: ");
 	switch (bootmode) {
@@ -561,7 +620,7 @@ int board_late_init(void)
 		break;
 	case JTAG_MODE:
 		puts("JTAG_MODE\n");
-		mode = "pxe dhcp";
+		mode = "jtag pxe dhcp";
 		env_set("modeboot", "jtagboot");
 		break;
 	case QSPI_MODE_24BIT:
@@ -572,8 +631,17 @@ int board_late_init(void)
 		break;
 	case EMMC_MODE:
 		puts("EMMC_MODE\n");
-		mode = "mmc0";
-		env_set("modeboot", "emmcboot");
+		if (uclass_get_device_by_name(UCLASS_MMC,
+					      "mmc@ff160000", &dev) &&
+		    uclass_get_device_by_name(UCLASS_MMC,
+					      "sdhci@ff160000", &dev)) {
+			puts("Boot from EMMC but without SD0 enabled!\n");
+			return -1;
+		}
+		debug("mmc0 device found at %p, seq %d\n", dev, dev->seq);
+
+		mode = "mmc";
+		bootseq = dev->seq;
 		break;
 	case SD_MODE:
 		puts("SD_MODE\n");
@@ -648,7 +716,7 @@ int board_late_init(void)
 
 	reset_reason();
 
-	return 0;
+	return board_late_init_xilinx();
 }
 #endif
 

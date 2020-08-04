@@ -8,7 +8,9 @@
 
 #include <common.h>
 #include <dm.h>
+#include <env.h>
 #include <fdtdec.h>
+#include <log.h>
 #include <malloc.h>
 #include <net.h>
 #include <dm/test.h>
@@ -46,7 +48,7 @@ static int dm_test_eth_alias(struct unit_test_state *uts)
 	ut_assertok(net_loop(PING));
 	ut_asserteq_str("eth@10002000", env_get("ethact"));
 
-	env_set("ethact", "eth1");
+	env_set("ethact", "eth6");
 	ut_assertok(net_loop(PING));
 	ut_asserteq_str("eth@10004000", env_get("ethact"));
 
@@ -103,7 +105,7 @@ static int dm_test_eth_act(struct unit_test_state *uts)
 	const char *ethname[DM_TEST_ETH_NUM] = {"eth@10002000", "eth@10003000",
 						"sbe5", "eth@10004000"};
 	const char *addrname[DM_TEST_ETH_NUM] = {"ethaddr", "eth5addr",
-						 "eth3addr", "eth1addr"};
+						 "eth3addr", "eth6addr"};
 	char ethaddr[DM_TEST_ETH_NUM][18];
 	int i;
 
@@ -186,15 +188,15 @@ static int dm_test_eth_rotate(struct unit_test_state *uts)
 
 	/* Invalidate eth1's MAC address */
 	memset(ethaddr, '\0', sizeof(ethaddr));
-	strncpy(ethaddr, env_get("eth1addr"), 17);
-	/* Must disable access protection for eth1addr before clearing */
-	env_set(".flags", "eth1addr");
-	env_set("eth1addr", NULL);
+	strncpy(ethaddr, env_get("eth6addr"), 17);
+	/* Must disable access protection for eth6addr before clearing */
+	env_set(".flags", "eth6addr");
+	env_set("eth6addr", NULL);
 
 	retval = _dm_test_eth_rotate1(uts);
 
 	/* Restore the env */
-	env_set("eth1addr", ethaddr);
+	env_set("eth6addr", ethaddr);
 	env_set("ethrotate", NULL);
 
 	if (!retval) {
@@ -280,17 +282,17 @@ static int sb_check_arp_reply(struct udevice *dev, void *packet,
 	ut_assert(arp_is_waiting());
 
 	/* Validate response */
-	ut_assert(memcmp(eth->et_src, net_ethaddr, ARP_HLEN) == 0);
-	ut_assert(memcmp(eth->et_dest, priv->fake_host_hwaddr, ARP_HLEN) == 0);
+	ut_asserteq_mem(eth->et_src, net_ethaddr, ARP_HLEN);
+	ut_asserteq_mem(eth->et_dest, priv->fake_host_hwaddr, ARP_HLEN);
 	ut_assert(eth->et_protlen == htons(PROT_ARP));
 
 	ut_assert(arp->ar_hrd == htons(ARP_ETHER));
 	ut_assert(arp->ar_pro == htons(PROT_IP));
 	ut_assert(arp->ar_hln == ARP_HLEN);
 	ut_assert(arp->ar_pln == ARP_PLEN);
-	ut_assert(memcmp(&arp->ar_sha, net_ethaddr, ARP_HLEN) == 0);
+	ut_asserteq_mem(&arp->ar_sha, net_ethaddr, ARP_HLEN);
 	ut_assert(net_read_ip(&arp->ar_spa).s_addr == net_ip.s_addr);
-	ut_assert(memcmp(&arp->ar_tha, priv->fake_host_hwaddr, ARP_HLEN) == 0);
+	ut_asserteq_mem(&arp->ar_tha, priv->fake_host_hwaddr, ARP_HLEN);
 	ut_assert(net_read_ip(&arp->ar_tpa).s_addr ==
 		  string_to_ip("1.1.2.4").s_addr);
 
@@ -371,8 +373,8 @@ static int sb_check_ping_reply(struct udevice *dev, void *packet,
 	ut_assert(arp_is_waiting());
 
 	/* Validate response */
-	ut_assert(memcmp(eth->et_src, net_ethaddr, ARP_HLEN) == 0);
-	ut_assert(memcmp(eth->et_dest, priv->fake_host_hwaddr, ARP_HLEN) == 0);
+	ut_asserteq_mem(eth->et_src, net_ethaddr, ARP_HLEN);
+	ut_asserteq_mem(eth->et_dest, priv->fake_host_hwaddr, ARP_HLEN);
 	ut_assert(eth->et_protlen == htons(PROT_IP));
 
 	ut_assert(net_read_ip(&ip->ip_src).s_addr == net_ip.s_addr);

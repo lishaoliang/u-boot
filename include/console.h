@@ -7,6 +7,8 @@
 #ifndef __CONSOLE_H
 #define __CONSOLE_H
 
+#include <stdbool.h>
+
 extern char console_buffer[];
 
 /* common/console.c */
@@ -42,6 +44,25 @@ void console_record_reset(void);
 void console_record_reset_enable(void);
 
 /**
+ * console_record_readline() - Read a line from the console output
+ *
+ * This reads the next available line from the console output previously
+ * recorded.
+ *
+ * @str: Place to put string
+ * @maxlen: Maximum length of @str including nul terminator
+ * @return length of string returned
+ */
+int console_record_readline(char *str, int maxlen);
+
+/**
+ * console_record_avail() - Get the number of available bytes in console output
+ *
+ * @return available bytes (0 if empty)
+ */
+int console_record_avail(void);
+
+/**
  * console_announce_r() - print a U-Boot console on non-serial consoles
  *
  * When U-Boot starts up with a display it generally does not announce itself
@@ -52,6 +73,17 @@ void console_record_reset_enable(void);
  * @return 0 (meaning no errors)
  */
 int console_announce_r(void);
+
+/**
+ * console_puts_select_stderr() - Output a string to selected console devices
+ *
+ * This writes to stderr only. It is useful for outputting errors
+ *
+ * @serial_only: true to output only to serial, false to output to everything
+ *	else
+ * @s: String to output
+ */
+void console_puts_select_stderr(bool serial_only, const char *s);
 
 /*
  * CONSOLE multiplexing.

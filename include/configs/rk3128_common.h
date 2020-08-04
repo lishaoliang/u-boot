@@ -9,8 +9,6 @@
 #include "rockchip-common.h"
 
 #define CONFIG_SYS_MAXARGS		16
-#define CONFIG_BAUDRATE			115200
-#define CONFIG_SYS_MALLOC_LEN		(32 << 20)
 #define CONFIG_SYS_CBSIZE		1024
 #define CONFIG_SKIP_LOWLEVEL_INIT
 
@@ -27,9 +25,7 @@
 #define CONFIG_SYS_BOOTM_LEN	(64 << 20)	/* 64M */
 
 /* RAW SD card / eMMC locations. */
-#define CONFIG_SYS_SPI_U_BOOT_OFFS	(128 << 10)
 
-#define CONFIG_SYS_MMCSD_FS_BOOT_PARTITION	1
 #define CONFIG_SYS_SDRAM_BASE		0x60000000
 #define SDRAM_MAX_SIZE			0x80000000
 

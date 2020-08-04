@@ -73,7 +73,7 @@ struct sandbox_state {
 	char **argv;			/* Command line arguments */
 	const char *jumped_fname;	/* Jumped from previous U_Boot */
 	uint8_t *ram_buf;		/* Emulated RAM buffer */
-	unsigned int ram_size;		/* Size of RAM buffer */
+	unsigned long ram_size;		/* Size of RAM buffer */
 	const char *ram_buf_fname;	/* Filename to use for RAM buffer */
 	bool ram_buf_rm;		/* Remove RAM buffer file after read */
 	bool write_ram_buf;		/* Write RAM buffer on exit */
@@ -83,6 +83,7 @@ struct sandbox_state {
 	bool write_state;		/* Write sandbox state on exit */
 	bool ignore_missing_state_on_read;	/* No error if state missing */
 	bool show_lcd;			/* Show LCD on start-up */
+	bool double_lcd;		/* Double display size for high-DPI */
 	enum sysreset_t last_sysreset;	/* Last system reset type */
 	bool sysreset_allowed[SYSRESET_COUNT];	/* Allowed system reset types */
 	enum state_terminal_raw term_raw;	/* Terminal raw/cooked */
@@ -102,6 +103,7 @@ struct sandbox_state {
 	ulong next_tag;			/* Next address tag to allocate */
 	struct list_head mapmem_head;	/* struct sandbox_mapmem_entry */
 	bool hwspinlock;		/* Hardware Spinlock status */
+	bool allow_memio;		/* Allow readl() etc. to work */
 
 	/*
 	 * This struct is getting large.

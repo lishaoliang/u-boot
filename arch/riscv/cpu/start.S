@@ -13,7 +13,6 @@
 #include <config.h>
 #include <common.h>
 #include <elf.h>
-#include <asm/csr.h>
 #include <asm/encoding.h>
 #include <generated/asm-offsets.h>
 
@@ -40,8 +39,8 @@ secondary_harts_relocation_error:
 .section .text
 .globl _start
 _start:
-#ifdef CONFIG_RISCV_MMODE
-	csrr	a0, mhartid
+#if CONFIG_IS_ENABLED(RISCV_MMODE)
+	csrr	a0, CSR_MHARTID
 #endif
 
 	/* save hart id and dtb pointer */
@@ -54,20 +53,20 @@ _start:
 	/* mask all interrupts */
 	csrw	MODE_PREFIX(ie), zero
 
-#ifdef CONFIG_SMP
+#if CONFIG_IS_ENABLED(SMP)
 	/* check if hart is within range */
 	/* tp: hart id */
 	li	t0, CONFIG_NR_CPUS
 	bge	tp, t0, hart_out_of_bounds_loop
-#endif
 
-#ifdef CONFIG_SMP
 	/* set xSIE bit to receive IPIs */
-#ifdef CONFIG_RISCV_MMODE
+#if CONFIG_IS_ENABLED(RISCV_MMODE)
 	li	t0, MIE_MSIE
 #else
 	li	t0, SIE_SSIE
 #endif
+	/* Clear any pending IPIs */
+	csrc	MODE_PREFIX(ip), t0
 	csrs	MODE_PREFIX(ie), t0
 #endif
 
@@ -76,7 +75,11 @@ _start:
  */
 call_board_init_f:
 	li	t0, -16
+#if defined(CONFIG_SPL_BUILD) && defined(CONFIG_SPL_STACK)
+	li	t1, CONFIG_SPL_STACK
+#else
 	li	t1, CONFIG_SYS_INIT_SP_ADDR
+#endif
 	and	sp, t1, t0		/* force 16 byte alignment */
 
 call_board_init_f_0:
@@ -90,7 +93,7 @@ call_board_init_f_0:
 	mv	gp, a0
 
 	/* setup stack */
-#ifdef CONFIG_SMP
+#if CONFIG_IS_ENABLED(SMP)
 	/* tp: hart id */
 	slli	t0, tp, CONFIG_STACK_SIZE_SHIFT
 	sub	sp, a0, t0
@@ -118,6 +121,7 @@ call_board_init_f_0:
 
 	jal	board_init_f_init_reserve
 
+	SREG	s1, GD_FIRMWARE_FDT_ADDR(gp)
 	/* save the boot hart id to global_data */
 	SREG	tp, GD_BOOT_HART(gp)
 
@@ -160,10 +164,63 @@ wait_for_gd_init:
 
 	mv	a0, zero		/* a0 <-- boot_flags = 0 */
 	la	t5, board_init_f
-	jr	t5			/* jump to board_init_f() */
+	jalr	t5			/* jump to board_init_f() */
+
+#ifdef CONFIG_SPL_BUILD
+spl_clear_bss:
+	la	t0, __bss_start
+	la	t1, __bss_end
+	beq	t0, t1, spl_stack_gd_setup
+
+spl_clear_bss_loop:
+	SREG	zero, 0(t0)
+	addi	t0, t0, REGBYTES
+	blt	t0, t1, spl_clear_bss_loop
+
+spl_stack_gd_setup:
+	jal	spl_relocate_stack_gd
+
+	/* skip setup if we did not relocate */
+	beqz	a0, spl_call_board_init_r
+	mv	s0, a0
+
+	/* setup stack on main hart */
+#if CONFIG_IS_ENABLED(SMP)
+	/* tp: hart id */
+	slli	t0, tp, CONFIG_STACK_SIZE_SHIFT
+	sub	sp, s0, t0
+#else
+	mv	sp, s0
+#endif
+
+#if CONFIG_IS_ENABLED(SMP)
+	/* set new stack and global data pointer on secondary harts */
+spl_secondary_hart_stack_gd_setup:
+	la	a0, secondary_hart_relocate
+	mv	a1, s0
+	mv	a2, s0
+	mv	a3, zero
+	jal	smp_call_function
+
+	/* hang if relocation of secondary harts has failed */
+	beqz	a0, 1f
+	mv	a1, a0
+	la	a0, secondary_harts_relocation_error
+	jal	printf
+	jal	hang
+#endif
+
+	/* set new global data pointer on main hart */
+1:	mv	gp, s0
+
+spl_call_board_init_r:
+	mv	a0, zero
+	mv	a1, zero
+	jal	board_init_r
+#endif
 
 /*
- * void relocate_code (addr_sp, gd, addr_moni)
+ * void relocate_code(addr_sp, gd, addr_moni)
  *
  * This "function" does not return, instead it continues in RAM
  * after relocating the monitor code.
@@ -179,7 +236,7 @@ relocate_code:
  *Set up the stack
  */
 stack_setup:
-#ifdef CONFIG_SMP
+#if CONFIG_IS_ENABLED(SMP)
 	/* tp: hart id */
 	slli	t0, tp, CONFIG_STACK_SIZE_SHIFT
 	sub	sp, s2, t0
@@ -216,7 +273,7 @@ fix_rela_dyn:
 /*
  * skip first reserved entry: address, type, addend
  */
-	bne	t1, t2, 7f
+	j	10f
 
 6:
 	LREG	t5, -(REGBYTES*2)(t1)	/* t5 <-- relocation info:type */
@@ -227,9 +284,7 @@ fix_rela_dyn:
 	add	t5, t5, t6		/* t5 <-- location to fix up in RAM */
 	add	t3, t3, t6		/* t3 <-- location to fix up in RAM */
 	SREG	t5, 0(t3)
-7:
-	addi	t1, t1, (REGBYTES*3)
-	ble	t1, t2, 6b
+	j	10f
 
 8:
 	la	t4, __dyn_sym_start
@@ -246,13 +301,15 @@ fix_rela_dyn:
 	li	t5, SYM_SIZE
 	mul	t0, t0, t5
 	add	s5, t4, t0
+	LREG	t0, -(REGBYTES)(t1)	/* t0 <-- addend */
 	LREG	t5, REGBYTES(s5)
+	add	t5, t5, t0
 	add	t5, t5, t6		/* t5 <-- location to fix up in RAM */
 	add	t3, t3, t6		/* t3 <-- location to fix up in RAM */
 	SREG	t5, 0(t3)
 10:
 	addi	t1, t1, (REGBYTES*3)
-	ble	t1, t2, 9b
+	ble	t1, t2, 6b
 
 /*
  * trap update
@@ -271,10 +328,10 @@ clear_bss:
 clbss_l:
 	SREG	zero, 0(t0)		/* clear loop... */
 	addi	t0, t0, REGBYTES
-	bne	t0, t1, clbss_l
+	blt	t0, t1, clbss_l
 
 relocate_secondary_harts:
-#ifdef CONFIG_SMP
+#if CONFIG_IS_ENABLED(SMP)
 	/* send relocation IPI */
 	la	t0, secondary_hart_relocate
 	add	a0, t0, t6
@@ -284,6 +341,7 @@ relocate_secondary_harts:
 
 	mv	a1, s2
 	mv	a2, s3
+	mv	a3, zero
 	jal	smp_call_function
 
 	/* hang if relocation of secondary harts has failed */
@@ -304,9 +362,8 @@ relocate_secondary_harts:
 call_board_init_r:
 	jal	invalidate_icache_all
 	jal	flush_dcache_all
-	la	t0, board_init_r
-	mv	t4, t0			/* offset of board_init_r() */
-	add	t4, t4, t6		/* real address of board_init_r() */
+	la	t0, board_init_r        /* offset of board_init_r() */
+	add	t4, t0, t6		/* real address of board_init_r() */
 /*
  * setup parameters for board_init_r
  */
@@ -318,14 +375,12 @@ call_board_init_r:
  */
 	jr	t4			/* jump to board_init_r() */
 
-#ifdef CONFIG_SMP
+#if CONFIG_IS_ENABLED(SMP)
 hart_out_of_bounds_loop:
 	/* Harts in this loop are out of bounds, increase CONFIG_NR_CPUS. */
 	wfi
 	j	hart_out_of_bounds_loop
-#endif
 
-#ifdef CONFIG_SMP
 /* SMP relocation entry */
 secondary_hart_relocate:
 	/* a1: new sp */
@@ -343,9 +398,9 @@ secondary_hart_relocate:
 secondary_hart_loop:
 	wfi
 
-#ifdef CONFIG_SMP
+#if CONFIG_IS_ENABLED(SMP)
 	csrr	t0, MODE_PREFIX(ip)
-#ifdef CONFIG_RISCV_MMODE
+#if CONFIG_IS_ENABLED(RISCV_MMODE)
 	andi	t0, t0, MIE_MSIE
 #else
 	andi	t0, t0, SIE_SSIE

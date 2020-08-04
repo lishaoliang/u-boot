@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
- * Copyright 2017 NXP
+ * Copyright 2017-2019 NXP
  * Copyright 2014-2015 Freescale Semiconductor, Inc.
  */
 
 #include <common.h>
+#include <cpu_func.h>
+#include <env.h>
 #include <fsl_ddr_sdram.h>
+#include <init.h>
+#include <hang.h>
+#include <log.h>
+#include <net.h>
+#include <vsprintf.h>
+#include <asm/cache.h>
 #include <asm/io.h>
+#include <asm/ptrace.h>
 #include <linux/errno.h>
 #include <asm/system.h>
 #include <fm_eth.h>
@@ -32,11 +41,12 @@
 #include <fsl_qbman.h>
 
 #ifdef CONFIG_TFABOOT
-#include <environment.h>
+#include <env_internal.h>
 #ifdef CONFIG_CHAIN_OF_TRUST
 #include <fsl_validate.h>
 #endif
 #endif
+#include <linux/mii.h>
 
 DECLARE_GLOBAL_DATA_PTR;
 
@@ -58,6 +68,9 @@ static struct cpu_type cpu_type_list[] = {
 	CPU_TYPE_ENTRY(LS1026A, LS1026A, 2),
 	CPU_TYPE_ENTRY(LS2040A, LS2040A, 4),
 	CPU_TYPE_ENTRY(LS1012A, LS1012A, 1),
+	CPU_TYPE_ENTRY(LS1017A, LS1017A, 1),
+	CPU_TYPE_ENTRY(LS1018A, LS1018A, 1),
+	CPU_TYPE_ENTRY(LS1027A, LS1027A, 2),
 	CPU_TYPE_ENTRY(LS1028A, LS1028A, 2),
 	CPU_TYPE_ENTRY(LS1088A, LS1088A, 8),
 	CPU_TYPE_ENTRY(LS1084A, LS1084A, 8),
@@ -1027,13 +1040,13 @@ int print_cpuinfo(void)
 #endif
 
 #ifdef CONFIG_FSL_ESDHC
-int cpu_mmc_init(bd_t *bis)
+int cpu_mmc_init(struct bd_info *bis)
 {
 	return fsl_esdhc_mmc_init(bis);
 }
 #endif
 
-int cpu_eth_init(bd_t *bis)
+int cpu_eth_init(struct bd_info *bis)
 {
 	int error = 0;
 
@@ -1068,6 +1081,8 @@ static void config_core_prefetch(void)
 
 	if (env_get_f("hwconfig", buffer, sizeof(buffer)) > 0)
 		buf = buffer;
+	else
+		return;
 
 	prefetch_arg = hwconfig_subarg_f("core_prefetch", "disable",
 					 &arglen, buf);
@@ -1091,6 +1106,12 @@ static void config_core_prefetch(void)
 		printf("0x%x\n", mask);
 	}
 }
+
+#ifdef CONFIG_PCIE_ECAM_GENERIC
+__weak void set_ecam_icids(void)
+{
+}
+#endif
 
 int arch_early_init_r(void)
 {
@@ -1139,10 +1160,15 @@ int arch_early_init_r(void)
 	fsl_rgmii_init();
 #endif
 #ifdef CONFIG_FMAN_ENET
+#ifndef CONFIG_DM_ETH
 	fman_enet_init();
+#endif
 #endif
 #ifdef CONFIG_SYS_DPAA_QBMAN
 	setup_qbman_portals();
+#endif
+#ifdef CONFIG_PCIE_ECAM_GENERIC
+	set_ecam_icids();
 #endif
 	return 0;
 }
@@ -1153,7 +1179,8 @@ int timer_init(void)
 #ifdef CONFIG_FSL_LSCH3
 	u32 __iomem *cltbenr = (u32 *)CONFIG_SYS_FSL_PMU_CLTBENR;
 #endif
-#if defined(CONFIG_ARCH_LS2080A) || defined(CONFIG_ARCH_LS1088A)
+#if defined(CONFIG_ARCH_LS2080A) || defined(CONFIG_ARCH_LS1088A) || \
+	defined(CONFIG_ARCH_LS1028A)
 	u32 __iomem *pctbenr = (u32 *)FSL_PMU_PCTBENR_OFFSET;
 	u32 svr_dev_id;
 #endif
@@ -1172,7 +1199,8 @@ int timer_init(void)
 	out_le32(cltbenr, 0xf);
 #endif
 
-#if defined(CONFIG_ARCH_LS2080A) || defined(CONFIG_ARCH_LS1088A)
+#if defined(CONFIG_ARCH_LS2080A) || defined(CONFIG_ARCH_LS1088A) || \
+	defined(CONFIG_ARCH_LS1028A)
 	/*
 	 * In certain Layerscape SoCs, the clock for each core's
 	 * has an enable bit in the PMU Physical Core Time Base Enable
@@ -1215,7 +1243,7 @@ void __efi_runtime reset_cpu(ulong addr)
 #endif
 }
 
-#ifdef CONFIG_EFI_LOADER
+#if defined(CONFIG_EFI_LOADER) && !defined(CONFIG_PSCI_RESET)
 
 void __efi_runtime EFIAPI efi_reset_system(
 		       enum efi_reset_type reset_type,
@@ -1357,7 +1385,7 @@ static int tfa_dram_init_banksize(void)
 	if (i > 0)
 		ret = 0;
 
-#if defined(CONFIG_FSL_MC_ENET) && !defined(CONFIG_SPL_BUILD)
+#if defined(CONFIG_RESV_RAM) && !defined(CONFIG_SPL_BUILD)
 	/* Assign memory for MC */
 #ifdef CONFIG_SYS_DDR_BLOCK3_BASE
 	if (gd->bd->bi_dram[2].size >=
@@ -1380,7 +1408,7 @@ static int tfa_dram_init_banksize(void)
 				board_reserve_ram_top(gd->bd->bi_dram[0].size);
 		}
 	}
-#endif	/* CONFIG_FSL_MC_ENET */
+#endif	/* CONFIG_RESV_RAM */
 
 	return ret;
 }
@@ -1443,7 +1471,7 @@ int dram_init_banksize(void)
 	}
 #endif	/* CONFIG_SYS_MEM_RESERVE_SECURE */
 
-#if defined(CONFIG_FSL_MC_ENET) && !defined(CONFIG_SPL_BUILD)
+#if defined(CONFIG_RESV_RAM) && !defined(CONFIG_SPL_BUILD)
 	/* Assign memory for MC */
 #ifdef CONFIG_SYS_DDR_BLOCK3_BASE
 	if (gd->bd->bi_dram[2].size >=
@@ -1466,7 +1494,7 @@ int dram_init_banksize(void)
 				board_reserve_ram_top(gd->bd->bi_dram[0].size);
 		}
 	}
-#endif	/* CONFIG_FSL_MC_ENET */
+#endif	/* CONFIG_RESV_RAM */
 
 #ifdef CONFIG_SYS_DP_DDR_BASE_PHY
 #ifdef CONFIG_SYS_DDR_BLOCK3_BASE
@@ -1505,9 +1533,8 @@ int dram_init_banksize(void)
 void efi_add_known_memory(void)
 {
 	int i;
-	phys_addr_t ram_start, start;
+	phys_addr_t ram_start;
 	phys_size_t ram_size;
-	u64 pages;
 
 	/* Add RAM */
 	for (i = 0; i < CONFIG_NR_DRAM_BANKS; i++) {
@@ -1525,11 +1552,8 @@ void efi_add_known_memory(void)
 		    gd->arch.resv_ram < ram_start + ram_size)
 			ram_size = gd->arch.resv_ram - ram_start;
 #endif
-		start = (ram_start + EFI_PAGE_MASK) & ~EFI_PAGE_MASK;
-		pages = (ram_size + EFI_PAGE_MASK) >> EFI_PAGE_SHIFT;
-
-		efi_add_memory_map(start, pages, EFI_CONVENTIONAL_MEMORY,
-				   false);
+		efi_add_memory_map(ram_start, ram_size,
+				   EFI_CONVENTIONAL_MEMORY);
 	}
 }
 #endif
@@ -1610,3 +1634,17 @@ __weak int dram_init(void)
 
 	return 0;
 }
+
+#ifdef CONFIG_ARCH_MISC_INIT
+__weak int serdes_misc_init(void)
+{
+	return 0;
+}
+
+int arch_misc_init(void)
+{
+	serdes_misc_init();
+
+	return 0;
+}
+#endif

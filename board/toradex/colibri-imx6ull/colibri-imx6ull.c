@@ -3,6 +3,8 @@
  * Copyright (C) 2018-2019 Toradex AG
  */
 #include <common.h>
+#include <init.h>
+#include <linux/delay.h>
 
 #include <asm/arch/clock.h>
 #include <asm/arch/crm_regs.h>
@@ -17,6 +19,7 @@
 #include <asm/io.h>
 #include <dm.h>
 #include <dm/platform_data/serial_mxc.h>
+#include <env.h>
 #include <fdt_support.h>
 #include <imx_thermal.h>
 #include <jffs2/load_kernel.h>
@@ -211,7 +214,7 @@ int checkboard(void)
 }
 
 #if defined(CONFIG_OF_LIBFDT) && defined(CONFIG_OF_BOARD_SETUP)
-int ft_board_setup(void *blob, bd_t *bd)
+int ft_board_setup(void *blob, struct bd_info *bd)
 {
 #if defined(CONFIG_FDT_FIXUP_PARTITIONS)
 	static struct node_info nodes[] = {

@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright 2014-2015 Freescale Semiconductor, Inc.
+ * Copyright 2020 NXP
  */
 
 #include <common.h>
+#include <clock_legacy.h>
 #include <efi_loader.h>
+#include <log.h>
+#include <asm/cache.h>
 #include <linux/libfdt.h>
 #include <fdt_support.h>
 #include <phy.h>
@@ -30,6 +34,14 @@
 
 int fdt_fixup_phy_connection(void *blob, int offset, phy_interface_t phyc)
 {
+	const char *conn;
+
+	/* Do NOT apply fixup for backplane modes specified in DT */
+	if (phyc == PHY_INTERFACE_MODE_XGMII) {
+		conn = fdt_getprop(blob, offset, "phy-connection-type", NULL);
+		if (is_backplane_mode(conn))
+			return 0;
+	}
 	return fdt_setprop_string(blob, offset, "phy-connection-type",
 					 phy_string_for_interface(phyc));
 }
@@ -42,7 +54,6 @@ void ft_fixup_cpu(void *blob)
 	fdt32_t *reg;
 	int addr_cells;
 	u64 val, core_id;
-	size_t *boot_code_size = &(__secondary_boot_code_size);
 	u32 mask = cpu_pos_mask();
 	int off_prev = -1;
 
@@ -133,12 +144,11 @@ remove_psci_node:
 						    "cpu", 4);
 	}
 
-	fdt_add_mem_rsv(blob, (uintptr_t)&secondary_boot_code,
-			*boot_code_size);
+	fdt_add_mem_rsv(blob, (uintptr_t)secondary_boot_code_start,
+			secondary_boot_code_size);
 #if CONFIG_IS_ENABLED(EFI_LOADER)
-	efi_add_memory_map((uintptr_t)&secondary_boot_code,
-			   ALIGN(*boot_code_size, EFI_PAGE_SIZE) >> EFI_PAGE_SHIFT,
-			   EFI_RESERVED_MEMORY_TYPE, false);
+	efi_add_memory_map((uintptr_t)secondary_boot_code_start,
+			   secondary_boot_code_size, EFI_RESERVED_MEMORY_TYPE);
 #endif
 }
 #endif
@@ -401,7 +411,33 @@ void fdt_fixup_remove_jr(void *blob)
 }
 #endif
 
-void ft_cpu_setup(void *blob, bd_t *bd)
+#ifdef CONFIG_ARCH_LS1028A
+static void fdt_disable_multimedia(void *blob, unsigned int svr)
+{
+	int off;
+
+	if (IS_MULTIMEDIA_EN(svr))
+		return;
+
+	/* Disable eDP/LCD node */
+	off = fdt_node_offset_by_compatible(blob, -1, "arm,mali-dp500");
+	if (off != -FDT_ERR_NOTFOUND)
+		fdt_status_disabled(blob, off);
+
+	/* Disable GPU node */
+	off = fdt_node_offset_by_compatible(blob, -1, "fsl,ls1028a-gpu");
+	if (off != -FDT_ERR_NOTFOUND)
+		fdt_status_disabled(blob, off);
+}
+#endif
+
+#ifdef CONFIG_PCIE_ECAM_GENERIC
+__weak void fdt_fixup_ecam(void *blob)
+{
+}
+#endif
+
+void ft_cpu_setup(void *blob, struct bd_info *bd)
 {
 	struct ccsr_gur __iomem *gur = (void *)(CONFIG_SYS_FSL_GUTS_ADDR);
 	unsigned int svr = gur_in32(&gur->svr);
@@ -435,7 +471,11 @@ void ft_cpu_setup(void *blob, bd_t *bd)
 	do_fixup_by_path_u32(blob, "/sysclk", "clock-frequency",
 			     CONFIG_SYS_CLK_FREQ, 1);
 
-#ifdef CONFIG_PCI_LAYERSCAPE
+#ifdef CONFIG_GIC_V3_ITS
+	ls_gic_rd_tables_init(blob);
+#endif
+
+#if defined(CONFIG_PCIE_LAYERSCAPE) || defined(CONFIG_PCIE_LAYERSCAPE_GEN4)
 	ft_pci_setup(blob, bd);
 #endif
 
@@ -461,5 +501,11 @@ void ft_cpu_setup(void *blob, bd_t *bd)
 #endif
 #ifdef CONFIG_HAS_FEATURE_ENHANCED_MSI
 	fdt_fixup_msi(blob);
+#endif
+#ifdef CONFIG_ARCH_LS1028A
+	fdt_disable_multimedia(blob, svr);
+#endif
+#ifdef CONFIG_PCIE_ECAM_GENERIC
+	fdt_fixup_ecam(blob);
 #endif
 }

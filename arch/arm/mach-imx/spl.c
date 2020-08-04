@@ -7,6 +7,9 @@
  */
 
 #include <common.h>
+#include <hang.h>
+#include <init.h>
+#include <log.h>
 #include <asm/io.h>
 #include <asm/arch/imx-regs.h>
 #include <asm/arch/sys_proto.h>
@@ -18,13 +21,17 @@
 
 DECLARE_GLOBAL_DATA_PTR;
 
+__weak int spl_board_boot_device(enum boot_device boot_dev_spl)
+{
+	return 0;
+}
+
 #if defined(CONFIG_MX6)
 /* determine boot device from SRC_SBMR1 (BOOT_CFG[4:1]) or SRC_GPR9 register */
 u32 spl_boot_device(void)
 {
 	unsigned int bmode = readl(&src_base->sbmr2);
 	u32 reg = imx6_src_get_boot_mode();
-	u32 mmc_index = ((reg >> 11) & 0x03);
 
 	/*
 	 * Check for BMODE if serial downloader is enabled
@@ -85,15 +92,19 @@ u32 spl_boot_device(void)
 	/* SD/eSD: 8.5.3, Table 8-15  */
 	case IMX6_BMODE_SD:
 	case IMX6_BMODE_ESD:
+		return BOOT_DEVICE_MMC1;
+	/* MMC/eMMC: 8.5.3 */
 	case IMX6_BMODE_MMC:
 	case IMX6_BMODE_EMMC:
-		if (mmc_index == 1)
-			return BOOT_DEVICE_MMC2;
-		else
-			return BOOT_DEVICE_MMC1;
+		return BOOT_DEVICE_MMC1;
 	/* NAND Flash: 8.5.2, Table 8-10 */
 	case IMX6_BMODE_NAND_MIN ... IMX6_BMODE_NAND_MAX:
 		return BOOT_DEVICE_NAND;
+#if defined(CONFIG_MX6UL) || defined(CONFIG_MX6ULL)
+	/* QSPI boot */
+	case IMX6_BMODE_QSPI:
+		return BOOT_DEVICE_SPI;
+#endif
 	}
 	return BOOT_DEVICE_NONE;
 }
@@ -126,6 +137,10 @@ u32 spl_boot_device(void)
 #endif
 
 	enum boot_device boot_device_spl = get_boot_device();
+
+	if (IS_ENABLED(CONFIG_IMX8MM) || IS_ENABLED(CONFIG_IMX8MN) ||
+	    IS_ENABLED(CONFIG_IMX8MP))
+		return spl_board_boot_device(boot_device_spl);
 
 	switch (boot_device_spl) {
 #if defined(CONFIG_MX7)
@@ -176,29 +191,52 @@ int g_dnl_bind_fixup(struct usb_device_descriptor *dev, const char *name)
 
 #if defined(CONFIG_SPL_MMC_SUPPORT)
 /* called from spl_mmc to see type of boot mode for storage (RAW or FAT) */
-u32 spl_boot_mode(const u32 boot_device)
+u32 spl_mmc_boot_mode(const u32 boot_device)
 {
-	switch (spl_boot_device()) {
+#if defined(CONFIG_MX7) || defined(CONFIG_IMX8M) || defined(CONFIG_IMX8)
+	switch (get_boot_device()) {
 	/* for MMC return either RAW or FAT mode */
-	case BOOT_DEVICE_MMC1:
-	case BOOT_DEVICE_MMC2:
-	case BOOT_DEVICE_MMC2_2:
-#if defined(CONFIG_SPL_FS_FAT)
-		return MMCSD_MODE_FS;
-#elif defined(CONFIG_SUPPORT_EMMC_BOOT)
-		return MMCSD_MODE_EMMCBOOT;
-#else
-		return MMCSD_MODE_RAW;
-#endif
-		break;
+	case SD1_BOOT:
+	case SD2_BOOT:
+	case SD3_BOOT:
+		if (IS_ENABLED(CONFIG_SPL_FS_FAT))
+			return MMCSD_MODE_FS;
+		else
+			return MMCSD_MODE_RAW;
+	case MMC1_BOOT:
+	case MMC2_BOOT:
+	case MMC3_BOOT:
+		if (IS_ENABLED(CONFIG_SPL_FS_FAT))
+			return MMCSD_MODE_FS;
+		else if (IS_ENABLED(CONFIG_SUPPORT_EMMC_BOOT))
+			return MMCSD_MODE_EMMCBOOT;
+		else
+			return MMCSD_MODE_RAW;
 	default:
 		puts("spl: ERROR:  unsupported device\n");
 		hang();
 	}
+#else
+	switch (boot_device) {
+	/* for MMC return either RAW or FAT mode */
+	case BOOT_DEVICE_MMC1:
+	case BOOT_DEVICE_MMC2:
+	case BOOT_DEVICE_MMC2_2:
+		if (IS_ENABLED(CONFIG_SPL_FS_FAT))
+			return MMCSD_MODE_FS;
+		else if (IS_ENABLED(CONFIG_SUPPORT_EMMC_BOOT))
+			return MMCSD_MODE_EMMCBOOT;
+		else
+			return MMCSD_MODE_RAW;
+	default:
+		puts("spl: ERROR:  unsupported device\n");
+		hang();
+	}
+#endif
 }
 #endif
 
-#if defined(CONFIG_SECURE_BOOT)
+#if defined(CONFIG_IMX_HAB)
 
 /*
  * +------------+  0x0 (DDR_UIMAGE_START) -
@@ -261,6 +299,7 @@ __weak void __noreturn jump_to_image_no_args(struct spl_image_info *spl_image)
 	}
 }
 
+#if !defined(CONFIG_SPL_FIT_SIGNATURE)
 ulong board_spl_fit_size_align(ulong size)
 {
 	/*
@@ -285,6 +324,7 @@ void board_spl_fit_post_load(ulong load_addr, size_t length)
 		hang();
 	}
 }
+#endif
 
 #endif
 

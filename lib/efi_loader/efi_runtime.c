@@ -7,13 +7,21 @@
 
 #include <common.h>
 #include <command.h>
+#include <cpu_func.h>
 #include <dm.h>
 #include <elf.h>
 #include <efi_loader.h>
+#include <log.h>
+#include <malloc.h>
 #include <rtc.h>
+#include <u-boot/crc.h>
 
 /* For manual relocation support */
 DECLARE_GLOBAL_DATA_PTR;
+
+/* GUID of the runtime properties table */
+static const efi_guid_t efi_rt_properties_table_guid =
+				EFI_RT_PROPERTIES_TABLE_GUID;
 
 struct efi_runtime_mmio_list {
 	struct list_head link;
@@ -81,31 +89,75 @@ struct elf_rela {
 	long addend;
 };
 
+static __efi_runtime_data struct efi_mem_desc *efi_virtmap;
+static __efi_runtime_data efi_uintn_t efi_descriptor_count;
+static __efi_runtime_data efi_uintn_t efi_descriptor_size;
+
 /*
  * EFI runtime code lives in two stages. In the first stage, U-Boot and an EFI
  * payload are running concurrently at the same time. In this mode, we can
  * handle a good number of runtime callbacks
  */
 
+/**
+ * efi_init_runtime_supported() - create runtime properties table
+ *
+ * Create a configuration table specifying which services are available at
+ * runtime.
+ *
+ * Return:	status code
+ */
 efi_status_t efi_init_runtime_supported(void)
 {
-	u16 efi_runtime_services_supported = 0;
+	efi_status_t ret;
+	struct efi_rt_properties_table *rt_table;
+
+	ret = efi_allocate_pool(EFI_RUNTIME_SERVICES_DATA,
+				sizeof(struct efi_rt_properties_table),
+				(void **)&rt_table);
+	if (ret != EFI_SUCCESS)
+		return ret;
+
+	rt_table->version = EFI_RT_PROPERTIES_TABLE_VERSION;
+	rt_table->length = sizeof(struct efi_rt_properties_table);
+	rt_table->runtime_services_supported =
+				EFI_RT_SUPPORTED_GET_VARIABLE |
+				EFI_RT_SUPPORTED_GET_NEXT_VARIABLE_NAME |
+				EFI_RT_SUPPORTED_SET_VIRTUAL_ADDRESS_MAP |
+				EFI_RT_SUPPORTED_CONVERT_POINTER;
 
 	/*
 	 * This value must be synced with efi_runtime_detach_list
 	 * as well as efi_runtime_services.
 	 */
 #ifdef CONFIG_EFI_HAVE_RUNTIME_RESET
-	efi_runtime_services_supported |= EFI_RT_SUPPORTED_RESET_SYSTEM;
+	rt_table->runtime_services_supported |= EFI_RT_SUPPORTED_RESET_SYSTEM;
 #endif
-	efi_runtime_services_supported |=
-				EFI_RT_SUPPORTED_SET_VIRTUAL_ADDRESS_MAP;
-	return EFI_CALL(efi_set_variable(L"RuntimeServicesSupported",
-					 &efi_global_variable_guid,
-					 EFI_VARIABLE_BOOTSERVICE_ACCESS |
-					 EFI_VARIABLE_RUNTIME_ACCESS,
-					 sizeof(efi_runtime_services_supported),
-					 &efi_runtime_services_supported));
+
+	ret = efi_install_configuration_table(&efi_rt_properties_table_guid,
+					      rt_table);
+	return ret;
+}
+
+/**
+ * efi_memcpy_runtime() - copy memory area
+ *
+ * At runtime memcpy() is not available.
+ *
+ * Overlapping memory areas can be copied safely if src >= dest.
+ *
+ * @dest:	destination buffer
+ * @src:	source buffer
+ * @n:		number of bytes to copy
+ * Return:	pointer to destination buffer
+ */
+void __efi_runtime efi_memcpy_runtime(void *dest, const void *src, size_t n)
+{
+	u8 *d = dest;
+	const u8 *s = src;
+
+	for (; n; --n)
+		*d++ = *s++;
 }
 
 /**
@@ -427,8 +479,8 @@ void efi_runtime_detach(void)
  * Return:		status code EFI_UNSUPPORTED
  */
 static __efi_runtime efi_status_t EFIAPI efi_set_virtual_address_map_runtime(
-			unsigned long memory_map_size,
-			unsigned long descriptor_size,
+			efi_uintn_t memory_map_size,
+			efi_uintn_t descriptor_size,
 			uint32_t descriptor_version,
 			struct efi_mem_desc *virtmap)
 {
@@ -452,6 +504,63 @@ static __efi_runtime efi_status_t EFIAPI efi_convert_pointer_runtime(
 			efi_uintn_t debug_disposition, void **address)
 {
 	return EFI_UNSUPPORTED;
+}
+
+/**
+ * efi_convert_pointer() - convert from physical to virtual pointer
+ *
+ * This function implements the ConvertPointer() runtime service until
+ * the first call to SetVirtualAddressMap().
+ *
+ * See the Unified Extensible Firmware Interface (UEFI) specification for
+ * details.
+ *
+ * @debug_disposition:	indicates if pointer may be converted to NULL
+ * @address:		pointer to be converted
+ * Return:		status code
+ */
+__efi_runtime efi_status_t EFIAPI
+efi_convert_pointer(efi_uintn_t debug_disposition, void **address)
+{
+	efi_physical_addr_t addr;
+	efi_uintn_t i;
+	efi_status_t ret = EFI_NOT_FOUND;
+
+	if (!efi_virtmap) {
+		ret = EFI_UNSUPPORTED;
+		goto out;
+	}
+
+	if (!address) {
+		ret = EFI_INVALID_PARAMETER;
+		goto out;
+	}
+	if (!*address) {
+		if (debug_disposition & EFI_OPTIONAL_PTR)
+			return EFI_SUCCESS;
+		else
+			return EFI_INVALID_PARAMETER;
+	}
+
+	addr = (uintptr_t)*address;
+	for (i = 0; i < efi_descriptor_count; i++) {
+		struct efi_mem_desc *map = (void *)efi_virtmap +
+					   (efi_descriptor_size * i);
+
+		if (addr >= map->physical_start &&
+		    (addr < map->physical_start
+			    + (map->num_pages << EFI_PAGE_SHIFT))) {
+			*address = (void *)(uintptr_t)
+				   (addr + map->virtual_start -
+				    map->physical_start);
+
+			ret = EFI_SUCCESS;
+			break;
+		}
+	}
+
+out:
+	return ret;
 }
 
 static __efi_runtime void efi_relocate_runtime_table(ulong offset)
@@ -480,6 +589,12 @@ static __efi_runtime void efi_relocate_runtime_table(ulong offset)
 	 */
 	efi_runtime_services.convert_pointer = &efi_convert_pointer_runtime;
 
+	/*
+	 * TODO: Update UEFI variable RuntimeServicesSupported removing flags
+	 * EFI_RT_SUPPORTED_SET_VIRTUAL_ADDRESS_MAP and
+	 * EFI_RT_SUPPORTED_CONVERT_POINTER as required by the UEFI spec 2.8.
+	 */
+
 	/* Update CRC32 */
 	efi_update_table_header_crc32(&efi_runtime_services.hdr);
 }
@@ -502,7 +617,10 @@ void efi_runtime_relocate(ulong offset, struct efi_mem_desc *map)
 
 		p = (void*)((ulong)rel->offset - base) + gd->relocaddr;
 
-		/* The runtime services are updated in efi_runtime_detach() */
+		/*
+		 * The runtime services table is updated in
+		 * efi_relocate_runtime_table()
+		 */
 		if (map && efi_is_runtime_service_pointer(p))
 			continue;
 
@@ -571,18 +689,27 @@ void efi_runtime_relocate(ulong offset, struct efi_mem_desc *map)
  * Return:		status code
  */
 static efi_status_t EFIAPI efi_set_virtual_address_map(
-			unsigned long memory_map_size,
-			unsigned long descriptor_size,
+			efi_uintn_t memory_map_size,
+			efi_uintn_t descriptor_size,
 			uint32_t descriptor_version,
 			struct efi_mem_desc *virtmap)
 {
-	int n = memory_map_size / descriptor_size;
-	int i;
+	efi_uintn_t n = memory_map_size / descriptor_size;
+	efi_uintn_t i;
+	efi_status_t ret = EFI_INVALID_PARAMETER;
 	int rt_code_sections = 0;
 	struct efi_event *event;
 
-	EFI_ENTRY("%lx %lx %x %p", memory_map_size, descriptor_size,
+	EFI_ENTRY("%zx %zx %x %p", memory_map_size, descriptor_size,
 		  descriptor_version, virtmap);
+
+	if (descriptor_version != EFI_MEMORY_DESCRIPTOR_VERSION ||
+	    descriptor_size < sizeof(struct efi_mem_desc))
+		goto out;
+
+	efi_virtmap = virtmap;
+	efi_descriptor_size = descriptor_size;
+	efi_descriptor_count = n;
 
 	/*
 	 * TODO:
@@ -610,7 +737,7 @@ static efi_status_t EFIAPI efi_set_virtual_address_map(
 		 * We expose exactly one single runtime code section, so
 		 * something is definitely going wrong.
 		 */
-		return EFI_EXIT(EFI_INVALID_PARAMETER);
+		goto out;
 	}
 
 	/* Notify EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE */
@@ -652,14 +779,6 @@ static efi_status_t EFIAPI efi_set_virtual_address_map(
 		}
 	}
 
-	/*
-	 * Some runtime services are implemented in a way that we can only offer
-	 * them at boottime. Replace those function pointers.
-	 *
-	 * TODO: move this call to ExitBootServices().
-	 */
-	efi_runtime_detach();
-
 	/* Relocate the runtime. See TODO above */
 	for (i = 0; i < n; i++) {
 		struct efi_mem_desc *map;
@@ -671,11 +790,13 @@ static efi_status_t EFIAPI efi_set_virtual_address_map(
 
 			efi_relocate_runtime_table(new_offset);
 			efi_runtime_relocate(new_offset, map);
-			return EFI_EXIT(EFI_SUCCESS);
+			ret = EFI_SUCCESS;
+			goto out;
 		}
 	}
 
-	return EFI_EXIT(EFI_INVALID_PARAMETER);
+out:
+	return EFI_EXIT(ret);
 }
 
 /**
@@ -692,11 +813,10 @@ static efi_status_t EFIAPI efi_set_virtual_address_map(
 efi_status_t efi_add_runtime_mmio(void *mmio_ptr, u64 len)
 {
 	struct efi_runtime_mmio_list *newmmio;
-	u64 pages = (len + EFI_PAGE_MASK) >> EFI_PAGE_SHIFT;
 	uint64_t addr = *(uintptr_t *)mmio_ptr;
 	efi_status_t ret;
 
-	ret = efi_add_memory_map(addr, pages, EFI_MMAP_IO, false);
+	ret = efi_add_memory_map(addr, len, EFI_MMAP_IO);
 	if (ret != EFI_SUCCESS)
 		return EFI_OUT_OF_RESOURCES;
 
@@ -800,7 +920,7 @@ struct efi_runtime_services __efi_runtime_data efi_runtime_services = {
 	.get_wakeup_time = (void *)&efi_unimplemented,
 	.set_wakeup_time = (void *)&efi_unimplemented,
 	.set_virtual_address_map = &efi_set_virtual_address_map,
-	.convert_pointer = (void *)&efi_unimplemented,
+	.convert_pointer = efi_convert_pointer,
 	.get_variable = efi_get_variable,
 	.get_next_variable_name = efi_get_next_variable_name,
 	.set_variable = efi_set_variable,

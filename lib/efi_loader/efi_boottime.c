@@ -8,12 +8,15 @@
 #include <common.h>
 #include <div64.h>
 #include <efi_loader.h>
-#include <environment.h>
+#include <irq_func.h>
+#include <log.h>
 #include <malloc.h>
+#include <time.h>
 #include <linux/libfdt_env.h>
 #include <u-boot/crc.h>
 #include <bootm.h>
 #include <pe.h>
+#include <u-boot/crc.h>
 #include <watchdog.h>
 
 DECLARE_GLOBAL_DATA_PTR;
@@ -39,14 +42,6 @@ LIST_HEAD(efi_register_notify_events);
 /* Handle of the currently executing image */
 static efi_handle_t current_image;
 
-/*
- * If we're running on nasty systems (32bit ARM booting into non-EFI Linux)
- * we need to do trickery with caches. Since we don't want to break the EFI
- * aware boot path, only apply hacks when loading exiting directly (breaking
- * direct Linux EFI booting along the way - oh well).
- */
-static bool efi_is_direct_boot = true;
-
 #ifdef CONFIG_ARM
 /*
  * The "gd" pointer lives in a register on ARM and AArch64 that we declare
@@ -54,7 +49,7 @@ static bool efi_is_direct_boot = true;
  * restriction so we need to manually swap its and our view of that register on
  * EFI callback entry/exit.
  */
-static volatile void *efi_gd, *app_gd;
+static volatile gd_t *efi_gd, *app_gd;
 #endif
 
 /* 1 if inside U-Boot code, 0 if inside EFI payload code */
@@ -94,7 +89,7 @@ int __efi_entry_check(void)
 #ifdef CONFIG_ARM
 	assert(efi_gd);
 	app_gd = gd;
-	gd = efi_gd;
+	set_gd(efi_gd);
 #endif
 	return ret;
 }
@@ -104,12 +99,20 @@ int __efi_exit_check(void)
 {
 	int ret = --entry_count == 0;
 #ifdef CONFIG_ARM
-	gd = app_gd;
+	set_gd(app_gd);
 #endif
 	return ret;
 }
 
-/* Called from do_bootefi_exec() */
+/**
+ * efi_save_gd() - save global data register
+ *
+ * On the ARM architecture gd is mapped to a fixed register (r9 or x18).
+ * As this register may be overwritten by an EFI payload we save it here
+ * and restore it on every callback entered.
+ *
+ * This function is called after relocation from initr_reloc_global_data().
+ */
 void efi_save_gd(void)
 {
 #ifdef CONFIG_ARM
@@ -117,10 +120,12 @@ void efi_save_gd(void)
 #endif
 }
 
-/*
- * Special case handler for error/abort that just forces things back to u-boot
- * world so we can dump out an abort message, without any care about returning
- * back to UEFI world.
+/**
+ * efi_restore_gd() - restore global data register
+ *
+ * On the ARM architecture gd is mapped to a fixed register (r9 or x18).
+ * Restore it after returning from the UEFI world to the value saved via
+ * efi_save_gd().
  */
 void efi_restore_gd(void)
 {
@@ -128,7 +133,7 @@ void efi_restore_gd(void)
 	/* Only restore if we're already in EFI context */
 	if (!efi_gd)
 		return;
-	gd = efi_gd;
+	set_gd(efi_gd);
 #endif
 }
 
@@ -214,7 +219,7 @@ static void efi_process_event_queue(void)
  */
 static void efi_queue_event(struct efi_event *event)
 {
-	struct efi_event *item = NULL;
+	struct efi_event *item;
 
 	if (!event->notify_function)
 		return;
@@ -1407,7 +1412,7 @@ static efi_status_t EFIAPI efi_register_protocol_notify(
 	}
 
 	item->event = event;
-	memcpy(&item->protocol, protocol, sizeof(efi_guid_t));
+	guidcpy(&item->protocol, protocol);
 	INIT_LIST_HEAD(&item->handles);
 
 	list_add_tail(&item->link, &efi_register_notify_events);
@@ -1638,7 +1643,7 @@ efi_status_t efi_install_configuration_table(const efi_guid_t *guid,
 		return EFI_OUT_OF_RESOURCES;
 
 	/* Add a new entry */
-	memcpy(&systab.tables[i].guid, guid, sizeof(*guid));
+	guidcpy(&systab.tables[i].guid, guid);
 	systab.tables[i].table = table;
 	systab.nr_tables = i + 1;
 
@@ -1888,12 +1893,12 @@ efi_status_t EFIAPI efi_load_image(bool boot_policy,
 	efi_dp_split_file_path(file_path, &dp, &fp);
 	ret = efi_setup_loaded_image(dp, fp, image_obj, &info);
 	if (ret == EFI_SUCCESS)
-		ret = efi_load_pe(*image_obj, dest_buffer, info);
+		ret = efi_load_pe(*image_obj, dest_buffer, source_size, info);
 	if (!source_buffer)
 		/* Release buffer to which file was loaded */
 		efi_free_pages((uintptr_t)dest_buffer,
 			       efi_size_in_pages(source_size));
-	if (ret == EFI_SUCCESS) {
+	if (ret == EFI_SUCCESS || ret == EFI_SECURITY_VIOLATION) {
 		info->system_table = &systab;
 		info->parent_handle = parent_image;
 	} else {
@@ -1911,13 +1916,21 @@ error:
  */
 static void efi_exit_caches(void)
 {
-#if defined(CONFIG_ARM) && !defined(CONFIG_ARM64)
+#if defined(CONFIG_EFI_GRUB_ARM32_WORKAROUND)
 	/*
-	 * Grub on 32bit ARM needs to have caches disabled before jumping into
-	 * a zImage, but does not know of all cache layers. Give it a hand.
+	 * Boooting Linux via GRUB prior to version 2.04 fails on 32bit ARM if
+	 * caches are enabled.
+	 *
+	 * TODO:
+	 * According to the UEFI spec caches that can be managed via CP15
+	 * operations should be enabled. Caches requiring platform information
+	 * to manage should be disabled. This should not happen in
+	 * ExitBootServices() but before invoking any UEFI binary is invoked.
+	 *
+	 * We want to keep the current workaround while GRUB prior to version
+	 * 2.04 is still in use.
 	 */
-	if (efi_is_direct_boot)
-		cleanup_before_linux();
+	cleanup_before_linux();
 #endif
 }
 
@@ -2104,10 +2117,10 @@ static efi_status_t EFIAPI efi_set_watchdog_timer(unsigned long timeout,
  *
  * Return: status code
  */
-static efi_status_t EFIAPI efi_close_protocol(efi_handle_t handle,
-					      const efi_guid_t *protocol,
-					      efi_handle_t agent_handle,
-					      efi_handle_t controller_handle)
+efi_status_t EFIAPI efi_close_protocol(efi_handle_t handle,
+				       const efi_guid_t *protocol,
+				       efi_handle_t agent_handle,
+				       efi_handle_t controller_handle)
 {
 	struct efi_handler *handler;
 	struct efi_open_protocol_info_item *item;
@@ -2280,7 +2293,7 @@ static efi_status_t EFIAPI efi_protocols_per_handle(
  *
  * Return: status code
  */
-static efi_status_t EFIAPI efi_locate_handle_buffer(
+efi_status_t EFIAPI efi_locate_handle_buffer(
 			enum efi_locate_search_type search_type,
 			const efi_guid_t *protocol, void *search_key,
 			efi_uintn_t *no_handles, efi_handle_t **buffer)
@@ -2883,17 +2896,21 @@ efi_status_t EFIAPI efi_start_image(efi_handle_t image_handle,
 
 	EFI_ENTRY("%p, %p, %p", image_handle, exit_data_size, exit_data);
 
+	if (!efi_search_obj(image_handle))
+		return EFI_EXIT(EFI_INVALID_PARAMETER);
+
 	/* Check parameters */
 	if (image_obj->header.type != EFI_OBJECT_TYPE_LOADED_IMAGE)
 		return EFI_EXIT(EFI_INVALID_PARAMETER);
+
+	if (image_obj->auth_status != EFI_IMAGE_AUTH_PASSED)
+		return EFI_EXIT(EFI_SECURITY_VIOLATION);
 
 	ret = EFI_CALL(efi_open_protocol(image_handle, &efi_guid_loaded_image,
 					 &info, NULL, NULL,
 					 EFI_OPEN_PROTOCOL_GET_PROTOCOL));
 	if (ret != EFI_SUCCESS)
 		return EFI_EXIT(EFI_INVALID_PARAMETER);
-
-	efi_is_direct_boot = false;
 
 	image_obj->exit_data_size = exit_data_size;
 	image_obj->exit_data = exit_data;
@@ -2913,7 +2930,7 @@ efi_status_t EFIAPI efi_start_image(efi_handle_t image_handle,
 		 * otherwise __efi_entry_check() will put the wrong value into
 		 * app_gd.
 		 */
-		gd = app_gd;
+		set_gd(app_gd);
 #endif
 		/*
 		 * To get ready to call EFI_EXIT below we have to execute the
@@ -2933,10 +2950,10 @@ efi_status_t EFIAPI efi_start_image(efi_handle_t image_handle,
 	ret = EFI_CALL(image_obj->entry(image_handle, &systab));
 
 	/*
-	 * Usually UEFI applications call Exit() instead of returning.
-	 * But because the world doesn't consist of ponies and unicorns,
-	 * we're happy to emulate that behavior on behalf of a payload
-	 * that forgot.
+	 * Control is returned from a started UEFI image either by calling
+	 * Exit() (where exit data can be provided) or by simply returning from
+	 * the entry point. In the latter case call Exit() on behalf of the
+	 * image.
 	 */
 	return EFI_CALL(systab.boottime->exit(image_handle, ret, 0, NULL));
 }
@@ -3182,9 +3199,9 @@ out:
  *
  * Return: status code
  */
-static efi_status_t EFIAPI efi_handle_protocol(efi_handle_t handle,
-					       const efi_guid_t *protocol,
-					       void **protocol_interface)
+efi_status_t EFIAPI efi_handle_protocol(efi_handle_t handle,
+					const efi_guid_t *protocol,
+					void **protocol_interface)
 {
 	return efi_open_protocol(handle, protocol, protocol_interface, efi_root,
 				 NULL, EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL);
@@ -3452,6 +3469,8 @@ static efi_status_t efi_get_child_controllers(
 	 * the buffer will be too large. But that does not harm.
 	 */
 	*number_of_children = 0;
+	if (!count)
+		return EFI_SUCCESS;
 	*child_handle_buffer = calloc(count, sizeof(efi_handle_t));
 	if (!*child_handle_buffer)
 		return EFI_OUT_OF_RESOURCES;
@@ -3502,7 +3521,6 @@ static efi_status_t EFIAPI efi_disconnect_controller(
 	efi_handle_t *child_handle_buffer = NULL;
 	size_t number_of_children = 0;
 	efi_status_t r;
-	size_t stop_count = 0;
 	struct efi_object *efiobj;
 
 	EFI_ENTRY("%p, %p, %p", controller_handle, driver_image_handle,
@@ -3530,10 +3548,12 @@ static efi_status_t EFIAPI efi_disconnect_controller(
 		number_of_children = 1;
 		child_handle_buffer = &child_handle;
 	} else {
-		efi_get_child_controllers(efiobj,
-					  driver_image_handle,
-					  &number_of_children,
-					  &child_handle_buffer);
+		r = efi_get_child_controllers(efiobj,
+					      driver_image_handle,
+					      &number_of_children,
+					      &child_handle_buffer);
+		if (r != EFI_SUCCESS)
+			return r;
 	}
 
 	/* Get the driver binding protocol */
@@ -3542,32 +3562,35 @@ static efi_status_t EFIAPI efi_disconnect_controller(
 				       (void **)&binding_protocol,
 				       driver_image_handle, NULL,
 				       EFI_OPEN_PROTOCOL_GET_PROTOCOL));
-	if (r != EFI_SUCCESS)
+	if (r != EFI_SUCCESS) {
+		r = EFI_INVALID_PARAMETER;
 		goto out;
+	}
 	/* Remove the children */
 	if (number_of_children) {
 		r = EFI_CALL(binding_protocol->stop(binding_protocol,
 						    controller_handle,
 						    number_of_children,
 						    child_handle_buffer));
-		if (r == EFI_SUCCESS)
-			++stop_count;
+		if (r != EFI_SUCCESS) {
+			r = EFI_DEVICE_ERROR;
+			goto out;
+		}
 	}
 	/* Remove the driver */
-	if (!child_handle)
+	if (!child_handle) {
 		r = EFI_CALL(binding_protocol->stop(binding_protocol,
 						    controller_handle,
 						    0, NULL));
-	if (r == EFI_SUCCESS)
-		++stop_count;
+		if (r != EFI_SUCCESS) {
+			r = EFI_DEVICE_ERROR;
+			goto out;
+		}
+	}
 	EFI_CALL(efi_close_protocol(driver_image_handle,
 				    &efi_guid_driver_binding_protocol,
 				    driver_image_handle, NULL));
-
-	if (stop_count)
-		r = EFI_SUCCESS;
-	else
-		r = EFI_NOT_FOUND;
+	r = EFI_SUCCESS;
 out:
 	if (!child_handle)
 		free(child_handle_buffer);

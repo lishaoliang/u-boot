@@ -9,10 +9,9 @@
 import glob
 import os
 
-from section import Entry_section
-import fdt_util
-import state
-import tools
+from binman.etype.section import Entry_section
+from dtoc import fdt_util
+from patman import tools
 
 
 class Entry_files(Entry_section):
@@ -29,7 +28,11 @@ class Entry_files(Entry_section):
     at run-time so you can obtain the file positions.
     """
     def __init__(self, section, etype, node):
-        Entry_section.__init__(self, section, etype, node)
+        # Put this here to allow entry-docs and help to work without libfdt
+        global state
+        from binman import state
+
+        super().__init__(section, etype, node)
         self._pattern = fdt_util.GetString(self._node, 'pattern')
         if not self._pattern:
             self.Raise("Missing 'pattern' property")

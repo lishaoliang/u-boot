@@ -11,7 +11,11 @@
 #include <common.h>
 #include <dm.h>
 #include <errno.h>
+#include <log.h>
+#include <malloc.h>
 #include <power-domain-uclass.h>
+#include <dm/device_compat.h>
+#include <linux/err.h>
 #include <linux/soc/ti/ti_sci_protocol.h>
 #include <dt-bindings/soc/ti,sci_pm_domain.h>
 
@@ -68,8 +72,8 @@ static int ti_sci_power_domain_on(struct power_domain *pd)
 		ret = dops->get_device(sci, pd->id);
 
 	if (ret)
-		dev_err(power_domain->dev, "%s: get_device failed (%d)\n",
-			__func__, ret);
+		dev_err(pd->dev, "%s: get_device(%lu) failed (%d)\n",
+			__func__, pd->id, ret);
 
 	return ret;
 }
@@ -85,8 +89,8 @@ static int ti_sci_power_domain_off(struct power_domain *pd)
 
 	ret = dops->put_device(sci, pd->id);
 	if (ret)
-		dev_err(power_domain->dev, "%s: put_device failed (%d)\n",
-			__func__, ret);
+		dev_err(pd->dev, "%s: put_device(%lu) failed (%d)\n",
+			__func__, pd->id, ret);
 
 	return ret;
 }
@@ -120,7 +124,7 @@ static const struct udevice_id ti_sci_power_domain_of_match[] = {
 
 static struct power_domain_ops ti_sci_power_domain_ops = {
 	.request = ti_sci_power_domain_request,
-	.free = ti_sci_power_domain_free,
+	.rfree = ti_sci_power_domain_free,
 	.on = ti_sci_power_domain_on,
 	.off = ti_sci_power_domain_off,
 	.of_xlate = ti_sci_power_domain_of_xlate,
